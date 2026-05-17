@@ -1,0 +1,28 @@
+# Fichiers système
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Dossiers et fichiers d'éditeur
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.history/
+
+# Sauvegardes et fichiers temporaires
+*.bak
+*.tmp
+*.log
+*~
+
+# Dépendances éventuelles
+node_modules/
+
+# Exports locaux de données
+exports/
+*.local.json
