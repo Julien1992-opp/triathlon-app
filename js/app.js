@@ -245,16 +245,33 @@ const APP = (function () {
     // dès qu'un chrono a été saisi.
     rendreEntete();
 
-    // Vider et confier le contenu au module concerné.
-    const contenu = document.getElementById('contenu');
-    if (!contenu) return;
-    contenu.innerHTML = '';
+    // Remplace #contenu par un clone vide. Indispensable :
+    // chaque module attache ses propres écouteurs (click, change,
+    // focusout, etc.) sur le conteneur via etat.conteneur. Comme
+    // on réutilise le même élément DOM entre les bascules d'onglet,
+    // ces écouteurs s'accumuleraient sans cela : un clic sur la
+    // pastille de sélection d'athlète déclencherait aussi le
+    // handler basculer-athlete d'un module précédemment visité,
+    // qui réécrirait son propre contenu par dessus celui du module
+    // courant. Conséquence visible : Profil basculant vers Suivi
+    // au changement d'athlète, alors que l'onglet du bas reste sur
+    // Profil. innerHTML = '' ne suffit pas à régler ce cas, car les
+    // écouteurs sont attachés à l'élément conteneur lui-même, pas
+    // à ses enfants. cloneNode(false) crée un nouvel élément vide,
+    // de même id et même classe, sans aucun écouteur. replaceChild
+    // le substitue dans le DOM. Le nouveau noeud est ensuite passé
+    // au module, qui y attache ses propres écouteurs, seuls
+    // présents pour la suite.
+    const ancien = document.getElementById('contenu');
+    if (!ancien) return;
+    const neuf = ancien.cloneNode(false);
+    ancien.parentNode.replaceChild(neuf, ancien);
 
     const moduleGlobal = obtenirModule(onglet.cle);
     if (moduleGlobal && typeof moduleGlobal.initialiser === 'function') {
-      moduleGlobal.initialiser(contenu);
+      moduleGlobal.initialiser(neuf);
     } else {
-      contenu.innerHTML = ''
+      neuf.innerHTML = ''
         + '<div class="profils__avertissement">'
         + '<strong>Module indisponible.</strong> '
         + 'Le module « ' + echapperHTML(onglet.libelle) + ' » '
