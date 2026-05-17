@@ -250,28 +250,142 @@ const SEANCES = (function () {
     return n;
   }
 
+
+  // -------------------- Calcul dynamique de l'allure --------------------
+  //
+  // L'allure cible et l'éventuel message d'invitation sont TOUJOURS
+  // recalculés ici à partir des chronos courants du profil, jamais
+  // lus depuis seance.allureCible ou seance.messageAllure stockés.
+  //
+  // Justification : à la première génération du plan, les chronos
+  // n'ont pas encore été saisis, donc les allures sont figées à null
+  // et le message d'invitation est stocké. Toute saisie ou
+  // modification ultérieure de chrono dans le profil n'aurait pas
+  // d'effet sur l'affichage si on lisait simplement la séance
+  // stockée. En dérivant à la volée, le Plan reflète immédiatement
+  // l'état du profil sans nécessiter de régénération, ce qui
+  // préserve les statuts, les notes et les personnalisations de
+  // 4e séance.
+
+  // Récupère une zone d'allure précise pour une discipline donnée,
+  // à partir des zones produites par ALLURES.calculerToutesZones.
+  // Retourne null si la zone n'est pas calculable.
+  function obtenirZoneAllure(zones, discipline, zoneCible) {
+    if (!zones || !discipline || !zoneCible) return null;
+    const r = zones[discipline];
+    if (!r || !r.estEstimation || !r.zonesEntrainement) return null;
+    const z = r.zonesEntrainement.find(function (z) {
+      return z.cle === zoneCible;
+    });
+    if (!z) return null;
+    return {
+      zone: zoneCible,
+      libelle: z.libelle,
+      affichage: z.affichage,
+      valeur: z.valeur,
+      unite: z.unite,
+    };
+  }
+
+  // Pour une séance donnée et les zones courantes, retourne
+  // { allureCible, messageAllure }. La structure d'allureCible
+  // est identique à ce que plan.js produit historiquement :
+  //   - séance pure : objet zone unique
+  //   - combinée    : objet { velo, course } (parties possiblement
+  //                   nulles si une discipline n'a pas de chrono)
+  // Pour les combinées, on lit cat.zoneCible (vélo) et cat.zoneCourse
+  // (course) directement depuis PLAN.CATALOGUE, ce qui évite de
+  // stocker zoneCourse dans la séance.
+  function calculerAllureCourante(seance, zones) {
+    if (!seance) {
+      return { allureCible: null, messageAllure: null };
+    }
+    if (seance.discipline === 'course_jour') {
+      return { allureCible: null, messageAllure: null };
+    }
+    const catalogue = (typeof PLAN !== 'undefined' && PLAN.CATALOGUE)
+      ? PLAN.CATALOGUE : {};
+    const cat = catalogue[seance.typeSeance];
+    if (!cat) {
+      // Type de séance inconnu : on retombe sur les valeurs stockées
+      // pour ne pas perdre l'information existante.
+      return {
+        allureCible: seance.allureCible || null,
+        messageAllure: seance.messageAllure || null,
+      };
+    }
+
+    if (seance.discipline === 'combinee') {
+      const av = obtenirZoneAllure(zones, 'velo', cat.zoneCible);
+      const ac = obtenirZoneAllure(
+        zones, 'course', cat.zoneCourse || cat.zoneCible);
+      if (!av && !ac) {
+        return {
+          allureCible: null,
+          messageAllure:
+            'Allures non calculées. Saisir un chrono pour le vélo '
+            + 'et la course pour obtenir les allures de la séance '
+            + 'combinée.',
+        };
+      }
+      const out = {};
+      if (av) out.velo = av;
+      if (ac) out.course = ac;
+      return { allureCible: out, messageAllure: null };
+    }
+
+    // Séance pure (natation, vélo, course)
+    const a = obtenirZoneAllure(
+      zones, seance.discipline, cat.zoneCible);
+    if (!a) {
+      const noms = {
+        natation: 'la natation',
+        velo: 'le vélo',
+        course: 'la course',
+      };
+      const nom = noms[seance.discipline] || seance.discipline;
+      return {
+        allureCible: null,
+        messageAllure: 'Allure non calculée. Saisir un chrono '
+          + 'représentatif pour ' + nom + ' dans le profil pour '
+          + 'obtenir l\'allure cible de la séance.',
+      };
+    }
+    return { allureCible: a, messageAllure: null };
+  }
+
+
   function construireListeCartes() {
     const sem = obtenirSemaine(etat.semaineCourante);
     if (!sem) return '';
+    // Zones d'allure calculées une seule fois pour toute la semaine,
+    // depuis les chronos courants du profil.
+    const zones = obtenirZones();
     let html = '<ul class="seances__liste">';
     for (let i = 0; i < sem.seances.length; i++) {
-      html += construireCarteSeance(sem.seances[i]);
+      html += construireCarteSeance(sem.seances[i], zones);
     }
     html += '</ul>';
     return html;
   }
 
-  function construireCarteSeance(seance) {
+  function construireCarteSeance(seance, zones) {
     const statut = STORAGE.obtenirStatutSeance(
       etat.athleteActif, seance.id);
     const couleur = couleurDiscipline(seance.discipline);
     const jour = libelleJour(seance.jour);
     const dateAff = formaterDateCourte(seance.date);
 
+    // Allure dérivée des chronos courants, jamais lue depuis le
+    // plan stocké (voir commentaire de calculerAllureCourante).
+    const dynamique = calculerAllureCourante(seance, zones);
+    const allureCible = dynamique.allureCible;
+    const messageAllure = dynamique.messageAllure;
+
     let allureHTML = '';
-    if (seance.discipline === 'combinee' && seance.allureCible) {
-      const v = seance.allureCible.velo;
-      const c = seance.allureCible.course;
+    if (seance.discipline === 'combinee' && allureCible) {
+      const v = allureCible.velo;
+      const c = allureCible.course;
       const parts = [];
       if (v) parts.push('Vélo ' + v.affichage);
       if (c) parts.push('Course ' + c.affichage);
@@ -279,10 +393,10 @@ const SEANCES = (function () {
         allureHTML = '<div class="seances__carte-allure">'
           + parts.join(' puis ') + '</div>';
       }
-    } else if (seance.allureCible) {
+    } else if (allureCible) {
       allureHTML = '<div class="seances__carte-allure">'
-        + echapperHTML(seance.allureCible.affichage) + '</div>';
-    } else if (seance.messageAllure) {
+        + echapperHTML(allureCible.affichage) + '</div>';
+    } else if (messageAllure) {
       allureHTML = '<div class="seances__carte-allure '
         + 'seances__carte-allure--manquante">'
         + 'Allure non calculée, compléter le profil</div>';
@@ -405,19 +519,25 @@ const SEANCES = (function () {
   function construireBlocAllure(seance, zones) {
     if (seance.discipline === 'course_jour') return '';
 
+    // Allure dérivée des chronos courants, jamais lue depuis le
+    // plan stocké (voir commentaire de calculerAllureCourante).
+    const dynamique = calculerAllureCourante(seance, zones);
+    const allureCible = dynamique.allureCible;
+    const messageAllure = dynamique.messageAllure;
+
     let interieur = '';
 
     if (seance.discipline === 'combinee') {
-      if (!seance.allureCible
-          || (!seance.allureCible.velo && !seance.allureCible.course)) {
+      if (!allureCible
+          || (!allureCible.velo && !allureCible.course)) {
         interieur = '<div class="seances__allure-message">'
-          + echapperHTML(seance.messageAllure
+          + echapperHTML(messageAllure
               || 'Allures non calculées, compléter le profil pour '
                 + 'obtenir les allures de la séance combinée.')
           + '</div>';
       } else {
-        const v = seance.allureCible.velo;
-        const c = seance.allureCible.course;
+        const v = allureCible.velo;
+        const c = allureCible.course;
         interieur = '<div class="seances__allure-combinee">'
           + (v
               ? '<div class="seances__allure-partie">'
@@ -436,13 +556,13 @@ const SEANCES = (function () {
           + '</div>';
       }
       interieur += construireMentionsFiabilite(['velo', 'course'], zones);
-    } else if (seance.allureCible) {
+    } else if (allureCible) {
       interieur = '<div class="seances__allure-valeur">'
-        + echapperHTML(seance.allureCible.affichage) + '</div>';
+        + echapperHTML(allureCible.affichage) + '</div>';
       interieur += construireMentionsFiabilite([seance.discipline], zones);
-    } else if (seance.messageAllure) {
+    } else if (messageAllure) {
       interieur = '<div class="seances__allure-message">'
-        + echapperHTML(seance.messageAllure) + '</div>';
+        + echapperHTML(messageAllure) + '</div>';
     } else {
       return '';
     }

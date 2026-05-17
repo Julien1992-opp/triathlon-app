@@ -781,6 +781,18 @@ const PLAN = (function () {
       libelle: cat.libelle,
       duree_min: dureeMin,
       zoneCible: cat.zoneCible,
+      // ATTENTION : allureCible et messageAllure ne sont plus
+      // consultés pour l'affichage depuis la correction apportée
+      // à seances.js. La source de vérité de l'allure est désormais
+      // le calcul dynamique fait dans seances.js à partir des
+      // chronos courants du profil (fonction calculerAllureCourante),
+      // pour que toute saisie ou modification de chrono se reflète
+      // immédiatement dans le Plan sans régénération.
+      // Ces deux champs sont uniquement conservés pour la
+      // compatibilité d'anciens exports JSON et la lisibilité de
+      // la structure persistée. Ne pas les utiliser pour décider
+      // de l'allure affichée. Ne pas se fier à leur valeur lors
+      // d'une relecture future.
       allureCible: allureCible,
       messageAllure: messageAllure,
       objectif: cat.objectif,
