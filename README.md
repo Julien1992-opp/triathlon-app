@@ -22,6 +22,10 @@ disposer de repères généraux sur la nutrition.
 - Vue par semaine, détail de chaque séance, statut de réalisation.
 - Indicateurs de progression simples.
 - Module nutrition strictement informatif, avec rappel visuel quotidien.
+- Avatar personnalisable par athlète : personnage SVG par défaut,
+  initiale colorée en repli, ou photo personnelle importée depuis un
+  fichier local. La photo est redimensionnée localement en carré
+  256 par 256 pixels avant stockage.
 
 ## Stack technique
 
@@ -29,6 +33,8 @@ disposer de repères généraux sur la nutrition.
 - Aucune dépendance externe, aucun backend, aucune bibliothèque.
 - Persistance dans le localStorage du navigateur.
 - Export et import des données au format JSON depuis l'écran Profil.
+- Traitement d'image local par canvas pour les avatars photo,
+  sans envoi distant et sans bibliothèque tierce.
 
 ## Lancement
 
@@ -111,7 +117,15 @@ Pour conserver une copie ou changer d'appareil, utiliser le bouton
 **Exporter en JSON** dans la section Sauvegarde de l'écran Profil.
 Vous obtenez un fichier `triathlon_lausanne_export_AAAA_MM_JJ.json`
 téléchargé localement. Sur l'appareil cible, utiliser **Importer
-depuis JSON** pour recharger l'état complet.
+depuis JSON** pour recharger l'état complet. L'import est un
+remplacement complet des données, jamais une fusion : tout le
+contenu présent dans le navigateur cible est écrasé par celui du
+fichier importé.
+
+Les photos d'avatar importées sont conservées comme les autres
+données et incluses dans les exports JSON. Le traitement
+(redimensionnement carré 256 par 256 pixels, encodage JPEG)
+est entièrement local : aucune image n'est envoyée nulle part.
 
 Effacer les données du navigateur, ou changer de port, supprime aussi
 les données de l'application. Penser à exporter régulièrement.

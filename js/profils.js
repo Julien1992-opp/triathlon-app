@@ -163,17 +163,44 @@ const PROFILS = (function () {
       + '</svg>';
   }
 
+  // Rendu d'avatar en cascade :
+  //   1. si l'athlète a une photo importée non vide, on la rend en
+  //      <img> circulaire (le carré 256 x 256 stocké est masqué par
+  //      le border-radius CSS) ;
+  //   2. sinon, si la préférence avatar simple est active pour cet
+  //      athlète, on rend l'initiale colorée ;
+  //   3. sinon, on rend le personnage SVG.
   function rendreAvatar(cleAthlete, taille) {
+    const t = taille || 96;
+    const prenom = cleAthlete === 'julien' ? 'Julien' : 'Giulia';
+
+    // 1. Photo importée prime sur tout, tant qu'elle existe.
+    try {
+      const athlete = STORAGE.obtenirAthlete(cleAthlete);
+      if (athlete && typeof athlete.photoAvatar === 'string'
+          && athlete.photoAvatar.length > 0) {
+        return ''
+          + '<img class="profils__avatar-img" '
+          + 'src="' + athlete.photoAvatar + '" '
+          + 'width="' + t + '" height="' + t + '" '
+          + 'alt="Avatar photo de ' + echapperHTML(prenom) + '"/>';
+      }
+    } catch (e) {
+      // Si la lecture échoue, on retombe sur l'avatar par défaut.
+    }
+
+    // 2. Bascule avatar simple si demandée.
     const prefs = STORAGE.obtenirPreferences();
     const simples = (prefs && prefs.avatarsSimples) || {};
     if (simples[cleAthlete]) {
       const couleur = cleAthlete === 'julien' ? '#023E8A' : '#9D0208';
-      const prenom = cleAthlete === 'julien' ? 'Julien' : 'Giulia';
-      return svgAvatarInitiale(prenom, couleur, taille);
+      return svgAvatarInitiale(prenom, couleur, t);
     }
+
+    // 3. Personnage SVG par défaut.
     return cleAthlete === 'julien'
-      ? svgAvatarJulien(taille)
-      : svgAvatarGiulia(taille);
+      ? svgAvatarJulien(t)
+      : svgAvatarGiulia(t);
   }
 
 
@@ -286,19 +313,61 @@ const PROFILS = (function () {
 
   function construireBandeauProfil(athlete) {
     const cle = etat.athleteActif;
-    const prenom = athlete.identite.prenom || (cle === 'julien' ? 'Julien' : 'Giulia');
+    const prenom = athlete.identite.prenom
+      || (cle === 'julien' ? 'Julien' : 'Giulia');
     const prefs = STORAGE.obtenirPreferences();
     const simple = !!(prefs.avatarsSimples && prefs.avatarsSimples[cle]);
+    const photoActive = !!(athlete.photoAvatar
+      && typeof athlete.photoAvatar === 'string'
+      && athlete.photoAvatar.length > 0);
+
+    // Aide de la case avatar simple : tant qu'une photo est active,
+    // la case reste cochable mais n'a pas d'effet visuel immédiat.
+    // Elle prépare le repli pour le cas où la photo serait retirée.
+    const aideAvatarSimple = photoActive
+      ? 'Sans effet tant qu\'une photo personnelle est définie.'
+      : '';
+    const titreAvatarSimple = photoActive
+      ? 'title="Sans effet tant qu\'une photo personnelle est définie."'
+      : '';
+
     return ''
       + '<header class="profils__bandeau">'
-      + '<div class="profils__bandeau-avatar">' + rendreAvatar(cle, 128) + '</div>'
+      + '<div class="profils__bandeau-avatar">'
+      +   rendreAvatar(cle, 128)
+      + '</div>'
       + '<div class="profils__bandeau-info">'
-      + '<h2 class="profils__titre">' + echapperHTML(prenom) + '</h2>'
-      + '<label class="profils__avatar-simple">'
-      + '<input type="checkbox" data-action="avatar-simple"'
-      + (simple ? ' checked' : '') + '/> '
-      + 'Avatar simple, lettre colorée'
-      + '</label>'
+
+      +   '<h2 class="profils__titre">' + echapperHTML(prenom) + '</h2>'
+
+      +   '<label class="profils__avatar-simple" ' + titreAvatarSimple + '>'
+      +     '<input type="checkbox" data-action="avatar-simple"'
+      +       (simple ? ' checked' : '') + '/> '
+      +     'Avatar simple, lettre colorée'
+      +   '</label>'
+      +   (aideAvatarSimple
+          ? '<div class="profils__avatar-simple-aide">'
+            + aideAvatarSimple + '</div>'
+          : '')
+
+      +   '<div class="profils__photo-actions">'
+      +     '<button type="button" '
+      +       'class="profils__bouton profils__bouton--secondaire" '
+      +       'data-action="ouvrir-import-photo">'
+      +       (photoActive ? 'Remplacer la photo' : 'Importer une photo')
+      +     '</button>'
+      +     (photoActive
+          ? '<button type="button" '
+            + 'class="profils__bouton profils__bouton--secondaire" '
+            + 'data-action="retirer-photo">Retirer la photo</button>'
+          : '')
+      +     '<input type="file" accept="image/*" '
+      +       'data-action="import-photo" hidden/>'
+      +   '</div>'
+
+      +   '<div class="profils__photo-erreur" '
+      +     'data-zone="photo-erreur" hidden></div>'
+
       + '</div>'
       + '</header>';
   }
@@ -667,6 +736,16 @@ const PROFILS = (function () {
       }
       return;
     }
+
+    if (action === 'ouvrir-import-photo') {
+      ouvrirImportPhoto();
+      return;
+    }
+
+    if (action === 'retirer-photo') {
+      retirerPhoto();
+      return;
+    }
   }
 
   function gererChange(e) {
@@ -713,6 +792,19 @@ const PROFILS = (function () {
         alert('Importation réussie.');
       }).catch(function (err) {
         alert('Importation échouée : ' + err.message);
+      });
+      return;
+    }
+
+    if (action === 'import-photo') {
+      const fichier = e.target.files && e.target.files[0];
+      if (!fichier) return;
+      afficherErreurAvatar('');
+      traiterImportPhoto(fichier).then(function () {
+        rendreTout();
+      }).catch(function (err) {
+        afficherErreurAvatar(err.message
+          || 'Import de la photo impossible.');
       });
       return;
     }
@@ -769,6 +861,145 @@ const PROFILS = (function () {
     if (action === 'identite-note') {
       modifierIdentite('note', e.target.value);
       return;
+    }
+  }
+
+
+  // -------------------- Gestion de la photo d'avatar --------------------
+
+  // Taille maximale acceptée pour le fichier en entrée, avant
+  // redimensionnement, pour éviter de charger un fichier énorme.
+  const PHOTO_TAILLE_MAX_ENTREE = 10 * 1024 * 1024; // 10 Mo
+  // Taille du carré de sortie après redimensionnement.
+  const PHOTO_TAILLE_CARRE = 256;
+  // Qualité JPEG de sortie.
+  const PHOTO_QUALITE_JPEG = 0.85;
+
+  // Affiche un message d'erreur dans la zone réservée du bandeau.
+  // Le message disparaît automatiquement au prochain rendreTout().
+  function afficherErreurAvatar(message) {
+    if (!etat.conteneur) return;
+    const zone = etat.conteneur.querySelector(
+      '[data-zone="photo-erreur"]');
+    if (!zone) return;
+    zone.textContent = message || '';
+    if (message) {
+      zone.removeAttribute('hidden');
+    } else {
+      zone.setAttribute('hidden', '');
+    }
+  }
+
+  // Déclenche l'ouverture de la boîte de dialogue de sélection de
+  // fichier par un clic programmatique sur l'input file caché.
+  function ouvrirImportPhoto() {
+    if (!etat.conteneur) return;
+    const input = etat.conteneur.querySelector(
+      'input[data-action="import-photo"]');
+    if (input) {
+      // Réinitialise la valeur pour permettre de re sélectionner
+      // le même fichier après une erreur.
+      input.value = '';
+      input.click();
+    }
+  }
+
+  // Redimensionne une Image en carré centré sur un canvas de la taille
+  // demandée. Recadrage centré sur la dimension la plus courte.
+  // Fond blanc en cas de transparence, puisqu'on sort en JPEG.
+  function redimensionnerEnCarre(img, taille) {
+    const canvas = document.createElement('canvas');
+    canvas.width = taille;
+    canvas.height = taille;
+    const ctx = canvas.getContext('2d');
+
+    // Fond blanc pour les images avec transparence.
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, taille, taille);
+
+    const cote = Math.min(img.naturalWidth, img.naturalHeight);
+    const sx = (img.naturalWidth - cote) / 2;
+    const sy = (img.naturalHeight - cote) / 2;
+    ctx.drawImage(img, sx, sy, cote, cote, 0, 0, taille, taille);
+    return canvas;
+  }
+
+  // Traite l'import d'un fichier image. Retourne une Promise qui
+  // rejette avec un message d'erreur clair en cas de problème, sans
+  // jamais modifier la photo existante de l'athlète.
+  function traiterImportPhoto(fichier) {
+    return new Promise(function (resoudre, rejeter) {
+      // 1. Validation du type MIME.
+      if (!fichier || !fichier.type
+          || fichier.type.indexOf('image/') !== 0) {
+        rejeter(new Error(
+          'Le fichier n\'est pas reconnu comme une image.'));
+        return;
+      }
+      // 2. Garde fou de taille en entrée.
+      if (fichier.size > PHOTO_TAILLE_MAX_ENTREE) {
+        rejeter(new Error(
+          'Image trop volumineuse, choisir un fichier plus léger.'));
+        return;
+      }
+
+      // 3. Lecture en DataURL puis chargement dans un Image.
+      const lecteur = new FileReader();
+      lecteur.onerror = function () {
+        rejeter(new Error('Lecture du fichier impossible.'));
+      };
+      lecteur.onload = function (evenement) {
+        const img = new Image();
+        img.onerror = function () {
+          rejeter(new Error(
+            'Image illisible, fichier corrompu ou format non supporté.'
+          ));
+        };
+        img.onload = function () {
+          try {
+            // 4. Redimensionnement carré centré et encodage JPEG.
+            const canvas = redimensionnerEnCarre(
+              img, PHOTO_TAILLE_CARRE);
+            const dataUrl = canvas.toDataURL(
+              'image/jpeg', PHOTO_QUALITE_JPEG);
+
+            // 5. Persistance via STORAGE. Si l'écriture échoue
+            //    (quota par exemple), l'exception est captée ici,
+            //    l'avatar reste inchangé en stockage.
+            try {
+              const athlete = STORAGE.obtenirAthlete(etat.athleteActif);
+              athlete.photoAvatar = dataUrl;
+              STORAGE.enregistrerAthlete(etat.athleteActif, athlete);
+              resoudre();
+            } catch (eEcriture) {
+              rejeter(new Error(
+                'Impossible de stocker la photo. Le stockage du '
+                + 'navigateur est plein ou la photo est trop lourde. '
+                + 'L\'avatar n\'a pas été modifié.'
+              ));
+            }
+          } catch (eCanvas) {
+            rejeter(new Error(
+              'Traitement de l\'image impossible : '
+              + eCanvas.message));
+          }
+        };
+        img.src = evenement.target.result;
+      };
+      lecteur.readAsDataURL(fichier);
+    });
+  }
+
+  // Retire la photo de l'athlète actif. L'avatar retombe alors sur
+  // le personnage SVG ou sur l'initiale colorée selon la préférence.
+  function retirerPhoto() {
+    try {
+      const athlete = STORAGE.obtenirAthlete(etat.athleteActif);
+      athlete.photoAvatar = null;
+      STORAGE.enregistrerAthlete(etat.athleteActif, athlete);
+      rendreTout();
+    } catch (e) {
+      afficherErreurAvatar('Suppression impossible : ' + e.message);
     }
   }
 

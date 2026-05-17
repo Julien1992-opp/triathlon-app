@@ -416,6 +416,54 @@ input[type="checkbox"] {
   margin-top: var(--esp-s);
 }
 
+/* Aide affichée sous la case avatar simple quand une photo est active.
+   La case reste cochable mais sans effet visuel immédiat, ce texte
+   explique son rôle de repli. */
+.profils__avatar-simple-aide {
+  font-size: var(--taille-xs);
+  color: var(--texte-tertiaire);
+  font-style: italic;
+  margin-top: var(--esp-xs);
+}
+
+/* Photo d'avatar importée : le carré 256 x 256 est masqué en cercle
+   via border-radius, et object-fit cover garantit l'absence de
+   déformation si la dimension cible diffère. */
+.profils__avatar-img {
+  display: block;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--bordure-claire);
+}
+
+/* Boutons d'action photo dans le bandeau. */
+.profils__photo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--esp-s);
+  margin-top: var(--esp-m);
+}
+
+.profils__photo-actions .profils__bouton {
+  font-size: var(--taille-s);
+  padding: var(--esp-s) var(--esp-m);
+  min-height: 36px;
+}
+
+/* Zone de message d'erreur sous les boutons photo. Visible quand
+   l'attribut hidden est retiré par JS. Ton rouge sablé, non agressif,
+   cohérent avec le thème sombre. */
+.profils__photo-erreur {
+  margin-top: var(--esp-s);
+  padding: var(--esp-s) var(--esp-m);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: var(--rayon-m);
+  color: var(--erreur);
+  font-size: var(--taille-xs);
+  line-height: 1.5;
+}
+
 /* Sections du profil */
 .profils__section {
   background: var(--fond-surface);

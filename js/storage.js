@@ -14,9 +14,11 @@
 
 const STORAGE = (function () {
 
-  // Clé unique de stockage. Suffixe de version pour permettre une future
-  // migration sans casser la donnée existante.
-  const CLE = 'triathlon_lausanne_2026_v1';
+  // Clés de stockage. La version active est CLE_V2. CLE_V1 n'est lue
+  // qu'une seule fois, pour migrer une installation antérieure vers
+  // le format v2 qui ajoute le champ photoAvatar par athlète.
+  const CLE_V1 = 'triathlon_lausanne_2026_v1';
+  const CLE_V2 = 'triathlon_lausanne_2026_v2';
 
   // Mémoire de secours si localStorage n'est pas accessible
   // (mode privé du navigateur, restrictions d'environnement).
@@ -59,7 +61,7 @@ const STORAGE = (function () {
   // Aucun chrono saisi, aucun plan généré, aucune case nutrition cochée.
   function structureInitiale() {
     return {
-      version: 1,
+      version: 2,
       creeLe: nouvelHorodatage(),
       miseAJour: nouvelHorodatage(),
 
@@ -98,6 +100,12 @@ const STORAGE = (function () {
         note: '',
       },
 
+      // Photo d'avatar importée par l'utilisateur, encodée en base64
+      // au format data URL JPEG. null signifie aucune photo : l'app
+      // retombe alors sur l'avatar SVG du personnage, ou sur le repli
+      // initiale colorée si l'option avatar simple est activée.
+      photoAvatar: null,
+
       // Liste de chronos saisis par l'utilisateur, par discipline.
       // Tableau vide tant que rien n'est saisi.
       // Format attendu d'une entrée : { libelle, distance, temps_s, date }.
@@ -129,6 +137,40 @@ const STORAGE = (function () {
   }
 
 
+  // -------------------- Migration de version --------------------
+
+  // Migration douce v1 vers v2. Idempotente : appelée sur des données
+  // déjà en v2, ne change rien. N'ajoute que les champs manquants,
+  // sans toucher aux chronos, plans, statuts, notes, FC, trame,
+  // nutrition ou préférences existants.
+  //
+  // Utilisée à deux endroits :
+  //   1. à la lecture, dans charger(), si seul CLE_V1 est présent ;
+  //   2. à l'import JSON, sur le contenu parsé d'un fichier exporté
+  //      avant l'évolution.
+  function migrerVersV2(donnees) {
+    if (!donnees || typeof donnees !== 'object') return donnees;
+    const versionActuelle = typeof donnees.version === 'number'
+      ? donnees.version : 1;
+    if (versionActuelle >= 2) return donnees;
+
+    const migre = clonageProfond(donnees);
+    migre.version = 2;
+
+    if (migre.athletes && typeof migre.athletes === 'object') {
+      const cles = ['julien', 'giulia'];
+      for (let i = 0; i < cles.length; i++) {
+        const a = migre.athletes[cles[i]];
+        if (a && typeof a === 'object'
+            && !Object.prototype.hasOwnProperty.call(a, 'photoAvatar')) {
+          a.photoAvatar = null;
+        }
+      }
+    }
+    return migre;
+  }
+
+
   // -------------------- Lecture et écriture brutes --------------------
 
   function charger() {
@@ -138,19 +180,71 @@ const STORAGE = (function () {
         : structureInitiale();
     }
     try {
-      const brut = window.localStorage.getItem(CLE);
-      if (brut === null || brut === undefined || brut === '') {
-        return structureInitiale();
+      // 1. Source de vérité : CLE_V2.
+      const brutV2 = window.localStorage.getItem(CLE_V2);
+      if (brutV2) {
+        const donneesV2 = JSON.parse(brutV2);
+        if (!estStructureValide(donneesV2)) {
+          console.warn(
+            'Données stockées invalides en v2. Réinitialisation.'
+          );
+          return structureInitiale();
+        }
+        // Cas atypique : CLE_V1 coexiste. CLE_V2 prime, on signale.
+        if (window.localStorage.getItem(CLE_V1)) {
+          console.warn(
+            'Coexistence des clés v1 et v2 détectée. La v2 prime, '
+            + 'la v1 est ignorée et conservée telle quelle.'
+          );
+        }
+        return donneesV2;
       }
-      const donnees = JSON.parse(brut);
-      if (!estStructureValide(donnees)) {
-        // Donnée corrompue. On revient à un état initial propre.
-        console.warn(
-          'Données stockées invalides. Réinitialisation de la structure.'
-        );
-        return structureInitiale();
+
+      // 2. Pas de v2 : tenter une migration depuis CLE_V1.
+      const brutV1 = window.localStorage.getItem(CLE_V1);
+      if (brutV1) {
+        const donneesV1 = JSON.parse(brutV1);
+        if (!estStructureValide(donneesV1)) {
+          console.warn(
+            'Données v1 invalides. Réinitialisation de la structure.'
+          );
+          return structureInitiale();
+        }
+        // Ordre strict :
+        //   a. migrerVersV2 produit un nouvel objet en v2 ;
+        //   b. sauvegarder() écrit cet objet sous CLE_V2 ;
+        //   c. SEULEMENT si l'écriture v2 a réussi, on supprime
+        //      CLE_V1. En cas d'échec de l'écriture (quota par
+        //      exemple), une exception remonte, le removeItem n'est
+        //      pas atteint, et CLE_V1 reste intacte pour réessai.
+        // donneesMigrees est déclarée hors du try pour rester visible
+        // dans le catch et éviter de recalculer la migration.
+        let donneesMigrees;
+        try {
+          donneesMigrees = migrerVersV2(donneesV1);
+          sauvegarder(donneesMigrees);
+          window.localStorage.removeItem(CLE_V1);
+          console.info(
+            'Migration v1 vers v2 effectuée. Champ photoAvatar '
+            + 'ajouté aux profils existants.'
+          );
+          return donneesMigrees;
+        } catch (eMigration) {
+          console.warn(
+            'Migration v1 vers v2 impossible : ' + eMigration.message
+            + '. Données v1 conservées intactes pour réessai.'
+          );
+          // On retourne la copie migrée en mémoire pour que la
+          // session courante fonctionne, sans toucher au stockage.
+          // Si migrerVersV2 a réussi avant l'échec de sauvegarder,
+          // donneesMigrees est déjà disponible. Sinon, on tente une
+          // dernière fois (rare : migrerVersV2 est très peu faillible).
+          return donneesMigrees || migrerVersV2(donneesV1);
+        }
       }
-      return donnees;
+
+      // 3. Première utilisation : aucune clé connue.
+      return structureInitiale();
     } catch (e) {
       basculerEnSecours('lecture impossible (' + e.message + ')');
       return memoireSecours
@@ -171,7 +265,7 @@ const STORAGE = (function () {
     }
     try {
       const texte = JSON.stringify(donnees);
-      window.localStorage.setItem(CLE, texte);
+      window.localStorage.setItem(CLE_V2, texte);
     } catch (e) {
       // Quota dépassé ou autre erreur d'écriture.
       basculerEnSecours('écriture impossible (' + e.message + ')');
@@ -344,8 +438,14 @@ const STORAGE = (function () {
             ));
             return;
           }
-          sauvegarder(donnees);
-          resoudre(donnees);
+          // Migration douce pour les fichiers exportés avant l'ajout
+          // du champ photoAvatar. L'import reste un REMPLACEMENT
+          // COMPLET de l'état de l'application, jamais une fusion :
+          // toutes les données préalablement en place sont écrasées
+          // par le contenu du fichier importé.
+          const donneesMigrees = migrerVersV2(donnees);
+          sauvegarder(donneesMigrees);
+          resoudre(donneesMigrees);
         } catch (e) {
           rejeter(new Error('Fichier JSON invalide : ' + e.message));
         }
@@ -360,7 +460,12 @@ const STORAGE = (function () {
   // athlètes sont présents. On reste tolérant pour le reste.
   function estStructureValide(donnees) {
     if (!donnees || typeof donnees !== 'object') return false;
-    if (typeof donnees.version !== 'number') return false;
+    // On accepte version >= 1 pour ne pas rejeter d'anciens fichiers
+    // à l'import. La normalisation au format courant est ensuite faite
+    // par migrerVersV2.
+    if (typeof donnees.version !== 'number' || donnees.version < 1) {
+      return false;
+    }
     if (!donnees.athletes || typeof donnees.athletes !== 'object') {
       return false;
     }
@@ -380,7 +485,9 @@ const STORAGE = (function () {
       return;
     }
     try {
-      window.localStorage.removeItem(CLE);
+      window.localStorage.removeItem(CLE_V2);
+      // On nettoie aussi une éventuelle ancienne clé v1, par hygiène.
+      window.localStorage.removeItem(CLE_V1);
     } catch (e) {
       basculerEnSecours('suppression impossible (' + e.message + ')');
       memoireSecours = null;
