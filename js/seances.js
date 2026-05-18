@@ -103,6 +103,66 @@ const SEANCES = (function () {
     return map[statut] || 'À venir';
   }
 
+  function libelleRessenti(cle) {
+    if (cle === 'facile') return 'Facile';
+    if (cle === 'moyen') return 'Moyen';
+    if (cle === 'dur') return 'Dur';
+    return '';
+  }
+
+  function libelleJourCourt(jour) {
+    const libs = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'];
+    if (typeof jour !== 'number') return '';
+    return libs[jour] || '';
+  }
+
+  // Formate une durée en minutes en chaîne compacte humaine :
+  // "0 min", "45 min", "1 h", "1 h 30". Aligné sur le format
+  // utilisé dans progression.js pour cohérence visuelle.
+  function formaterMinutes(min) {
+    if (!min || min <= 0) return '0 min';
+    if (min < 60) return Math.round(min) + ' min';
+    const h = Math.floor(min / 60);
+    const m = Math.round(min) % 60;
+    if (m === 0) return h + ' h';
+    return h + ' h ' + String(m).padStart(2, '0');
+  }
+
+  // Contribution en minutes réalisées pour une séance, déléguée à
+  // PROGRESSION pour ne pas dupliquer la règle de priorité (durée
+  // réelle, distance convertie, repli statut, manquee force 0).
+  function contributionRealiseeSeance(seance, statut, realisation, zones) {
+    if (typeof PROGRESSION === 'undefined'
+        || !PROGRESSION.contributionRealiseeMin) {
+      // Repli minimal si PROGRESSION pas encore chargé : on
+      // pondère par statut. La règle distance et durée saisie
+      // sera correctement appliquée dès que PROGRESSION est en
+      // place (cas normal d'utilisation).
+      if (statut === 'manquee') return 0;
+      const d = seance.duree_min || 0;
+      if (statut === 'faite') return d;
+      if (statut === 'partielle') return d * 0.5;
+      return 0;
+    }
+    return PROGRESSION.contributionRealiseeMin(
+      seance, statut, realisation, zones);
+  }
+
+  // Indique si une saisie de réalisation est jugée "informative",
+  // c'est à dire si l'utilisateur a renseigné au moins un champ
+  // chiffré (durée ou distance). Sert à décider si on affiche la
+  // ligne de comparaison prévu / réalisé en chiffres précis sur
+  // la carte de liste, ou si on s'en tient à la pondération par
+  // statut affichée ailleurs.
+  function aSaisieChiffree(realisation) {
+    if (!realisation) return false;
+    if (typeof realisation.duree_min === 'number'
+        && realisation.duree_min > 0) return true;
+    if (typeof realisation.distance_km === 'number'
+        && realisation.distance_km > 0) return true;
+    return false;
+  }
+
   // Semaine par défaut : courante si on est dans la fenêtre du plan,
   // sinon semaine 1 (avant le 18 mai 2026).
   function semaineParDefaut() {
@@ -211,6 +271,21 @@ const SEANCES = (function () {
     const nbFaite = countStatuts(sem, 'faite');
     const nbAutres = sem.seances.length - nbAVenir - nbFaite;
 
+    // Agrégation prévu / réalisé en minutes sur la semaine. Le
+    // réalisé suit la règle de priorité fournie par PROGRESSION.
+    const zones = obtenirZones();
+    let prevuMin = 0;
+    let realiseMin = 0;
+    for (let i = 0; i < sem.seances.length; i++) {
+      const s = sem.seances[i];
+      prevuMin += s.duree_min || 0;
+      const statut = STORAGE.obtenirStatutSeance(etat.athleteActif, s.id);
+      const realisation = STORAGE.obtenirRealisation(
+        etat.athleteActif, s.id);
+      realiseMin += contributionRealiseeSeance(
+        s, statut, realisation, zones);
+    }
+
     return ''
       + '<section class="seances__bandeau">'
       + '<button type="button" class="seances__nav-bouton" '
@@ -232,6 +307,14 @@ const SEANCES = (function () {
       +     'dont ' + nbFaite + ' faites, '
       +     (nbAutres ? nbAutres + ' partielles ou manquées, ' : '')
       +     nbAVenir + ' à venir.'
+      +   '</div>'
+      +   '<div class="seances__bandeau-volumes">'
+      +     '<span class="seances__bandeau-volume">'
+      +       '<strong>Prévu</strong> ' + formaterMinutes(prevuMin)
+      +     '</span>'
+      +     '<span class="seances__bandeau-volume">'
+      +       '<strong>Réalisé</strong> ' + formaterMinutes(realiseMin)
+      +     '</span>'
       +   '</div>'
       + '</div>'
       + '<button type="button" class="seances__nav-bouton" '
@@ -372,6 +455,8 @@ const SEANCES = (function () {
   function construireCarteSeance(seance, zones) {
     const statut = STORAGE.obtenirStatutSeance(
       etat.athleteActif, seance.id);
+    const realisation = STORAGE.obtenirRealisation(
+      etat.athleteActif, seance.id);
     const couleur = couleurDiscipline(seance.discipline);
     const jour = libelleJour(seance.jour);
     const dateAff = formaterDateCourte(seance.date);
@@ -441,12 +526,34 @@ const SEANCES = (function () {
 
       + allureHTML
 
+      + construireMiniRealiseCarte(seance, statut, realisation, zones)
+
       + (seance.renforcement
           ? '<div class="seances__carte-renforcement">'
             + 'Bloc renforcement en fin de séance</div>'
           : '')
 
       + '</li>';
+  }
+
+  // Mini ligne "Prévu X · Réalisé Y" sous la carte de liste, affichée
+  // uniquement quand l'utilisateur a saisi une durée ou une distance
+  // réelle. Le cas saisie purement qualitative (ressenti ou
+  // commentaire seuls) reste discret pour ne pas alourdir la carte.
+  function construireMiniRealiseCarte(seance, statut, realisation, zones) {
+    if (!aSaisieChiffree(realisation)) return '';
+    const prevu = seance.duree_min || 0;
+    const realise = contributionRealiseeSeance(
+      seance, statut, realisation, zones);
+    const classeMod = realise > prevu * 1.05
+      ? ' seances__carte-realise--surplus'
+      : (realise < prevu * 0.95
+          ? ' seances__carte-realise--deficit'
+          : '');
+    return '<div class="seances__carte-realise' + classeMod + '">'
+      + 'Prévu ' + formaterMinutes(prevu)
+      + ' · Réalisé ' + formaterMinutes(realise)
+      + '</div>';
   }
 
 
@@ -487,9 +594,12 @@ const SEANCES = (function () {
       + construireBlocObjectif(seance)
       + construireBlocDetails(seance)
       + construireBlocRenforcement(seance)
-      + construireBlocPersonnalisation(seance)
       + construireBlocStatut(seance)
+      + construireBlocPropositionReport(seance)
+      + construireBlocRealise(seance)
+      + construireBlocComparaison(seance, zones)
       + construireBlocNote(seance)
+      + construireBlocAdapter(seance, trouvee.semaine)
 
       + construireAvertissement()
       + '</div>';
@@ -627,33 +737,377 @@ const SEANCES = (function () {
     return html;
   }
 
-  function construireBlocPersonnalisation(seance) {
-    if (!seance.estPersonnalisable) return '';
+  // ---- Bloc Réalisé (saisie après séance) ----
+  //
+  // Quatre champs saisissables :
+  //   - durée réelle en minutes (input numérique),
+  //   - distance réelle en km (input décimal),
+  //   - ressenti d'effort (trois boutons radio facile / moyen / dur),
+  //   - commentaire libre (textarea, 500 caractères max).
+  // Les valeurs sont stockées via STORAGE.enregistrerRealisation à
+  // chaque modification (blur pour les inputs, click pour le
+  // ressenti). Si tous les champs sont vides après modification,
+  // l'entrée est automatiquement supprimée par le storage.
+  //
+  // Cas course_jour : pas de bloc de saisie de réalisation
+  // (la course du 30 août ne se "réalise" pas dans le sens
+  // habituel). On laisse uniquement le statut et la note libre.
+  function construireBlocRealise(seance) {
+    if (seance.discipline === 'course_jour') return '';
 
-    const catalogue = PLAN.CATALOGUE || {};
-    const alternatives = Object.keys(catalogue).filter(function (cle) {
-      const cat = catalogue[cle];
-      if (cle === 'course_jour') return false;
-      return cat.discipline === seance.discipline;
-    });
+    const r = STORAGE.obtenirRealisation(
+      etat.athleteActif, seance.id) || {};
+    const duree = (typeof r.duree_min === 'number' && r.duree_min > 0)
+      ? String(r.duree_min) : '';
+    const distance = (typeof r.distance_km === 'number' && r.distance_km > 0)
+      ? String(r.distance_km) : '';
+    const ressenti = r.ressenti || null;
+    const commentaire = r.commentaire || '';
 
-    let html = '<section class="seances__bloc">'
-      + '<h3>Remplacer cette séance</h3>'
+    return ''
+      + '<section class="seances__bloc seances__bloc--realise">'
+      + '<h3>Réalisé après la séance</h3>'
       + '<p class="seances__aide">'
-      + 'Choisir un autre type de séance pour la quatrième séance '
-      + 'de la semaine. Le reste du plan reste inchangé.</p>'
+      + 'Saisie facultative. Sert au calcul de la charge réalisée. '
+      + 'Une séance manquée ne pèse pas dans la charge, même si une '
+      + 'saisie est présente.</p>'
+
+      + '<div class="seances__realise-ligne">'
+      +   '<label class="seances__realise-champ">'
+      +     '<span>Durée</span>'
+      +     '<input type="number" inputmode="numeric" min="1" step="1" '
+      +       'data-action="real-duree" placeholder="min" '
+      +       'value="' + echapperHTML(duree) + '">'
+      +     '<small>min</small>'
+      +   '</label>'
+      +   '<label class="seances__realise-champ">'
+      +     '<span>Distance</span>'
+      +     '<input type="number" inputmode="decimal" min="0" step="0.1" '
+      +       'data-action="real-distance" placeholder="km" '
+      +       'value="' + echapperHTML(distance) + '">'
+      +     '<small>km</small>'
+      +   '</label>'
+      + '</div>'
+
+      + '<div class="seances__realise-ressenti" role="group" '
+      + 'aria-label="Ressenti d\'effort">'
+      +   boutonRessenti('facile', ressenti)
+      +   boutonRessenti('moyen', ressenti)
+      +   boutonRessenti('dur', ressenti)
+      + '</div>'
+
+      + '<textarea class="seances__realise-commentaire" '
+      + 'data-action="real-commentaire" maxlength="500" '
+      + 'placeholder="Commentaire court : sensations, météo, '
+      + 'circonstances...">'
+      + echapperHTML(commentaire)
+      + '</textarea>'
+
+      + '</section>';
+  }
+
+  function boutonRessenti(cle, valeurActive) {
+    return '<button type="button" '
+      + 'class="seances__ressenti seances__ressenti--' + cle
+      + (valeurActive === cle ? ' seances__ressenti--actif' : '') + '" '
+      + 'data-action="real-ressenti" data-valeur="' + cle + '">'
+      + libelleRessenti(cle) + '</button>';
+  }
+
+
+  // ---- Bloc Comparaison prévu / réalisé ----
+  //
+  // Tableau compact en deux ou trois lignes :
+  //   - Durée prévue vs réalisée (en minutes formatées),
+  //   - Distance réelle si saisie (informatif),
+  //   - Ressenti si renseigné (informatif).
+  // Affiché seulement si au moins une saisie ou un statut autre que
+  // 'a_venir' apporte de l'information. Sinon, l'utilisateur n'a
+  // rien à voir et le bloc reste invisible.
+  function construireBlocComparaison(seance, zones) {
+    if (seance.discipline === 'course_jour') return '';
+
+    const statut = STORAGE.obtenirStatutSeance(
+      etat.athleteActif, seance.id);
+    const realisation = STORAGE.obtenirRealisation(
+      etat.athleteActif, seance.id);
+
+    // Conditions d'affichage : on évite d'afficher un bloc vide
+    // tant qu'aucune réalisation n'est ni saisie ni implicite.
+    const rienALireStatut = (statut === 'a_venir');
+    if (rienALireStatut && !realisation) return '';
+
+    const prevu = seance.duree_min || 0;
+    const realise = contributionRealiseeSeance(
+      seance, statut, realisation, zones);
+    const delta = Math.round(realise - prevu);
+    const signe = delta > 0 ? '+' : (delta < 0 ? '−' : '');
+    const classeDelta = delta > 0
+      ? 'seances__comparaison-delta--surplus'
+      : (delta < 0
+          ? 'seances__comparaison-delta--deficit'
+          : 'seances__comparaison-delta--egal');
+
+    let lignes = ''
+      + '<div class="seances__comparaison-ligne">'
+      +   '<span class="seances__comparaison-libelle">Durée</span>'
+      +   '<span class="seances__comparaison-prevu">'
+      +     formaterMinutes(prevu) + '</span>'
+      +   '<span class="seances__comparaison-vers">→</span>'
+      +   '<span class="seances__comparaison-realise">'
+      +     formaterMinutes(realise) + '</span>'
+      +   '<span class="seances__comparaison-delta '
+      +     classeDelta + '">'
+      +     (delta === 0 ? '=' : signe + formaterMinutes(Math.abs(delta)))
+      +   '</span>'
+      + '</div>';
+
+    if (realisation && typeof realisation.distance_km === 'number'
+        && realisation.distance_km > 0) {
+      lignes += ''
+        + '<div class="seances__comparaison-ligne">'
+        +   '<span class="seances__comparaison-libelle">Distance</span>'
+        +   '<span class="seances__comparaison-prevu">—</span>'
+        +   '<span class="seances__comparaison-vers">→</span>'
+        +   '<span class="seances__comparaison-realise">'
+        +     echapperHTML(String(realisation.distance_km)) + ' km</span>'
+        +   '<span></span>'
+        + '</div>';
+    }
+
+    if (realisation && realisation.ressenti) {
+      lignes += ''
+        + '<div class="seances__comparaison-ligne">'
+        +   '<span class="seances__comparaison-libelle">Ressenti</span>'
+        +   '<span class="seances__comparaison-prevu">—</span>'
+        +   '<span class="seances__comparaison-vers">→</span>'
+        +   '<span class="seances__comparaison-realise">'
+        +     libelleRessenti(realisation.ressenti) + '</span>'
+        +   '<span></span>'
+        + '</div>';
+    }
+
+    // Invite contextuelle : si une saisie chiffrée existe mais que
+    // le statut est encore 'a_venir', on rappelle à l'utilisateur
+    // que les deux sont indépendants. La saisie pèse déjà dans la
+    // charge réalisée, mais le statut reflète l'état officiel de
+    // la séance et reste à mettre à jour explicitement.
+    const inviteStatut = (statut === 'a_venir' && aSaisieChiffree(realisation))
+      ? '<p class="seances__aide-petit">'
+        + 'Saisie enregistrée. Le statut ci-dessus reste sur "À venir" : '
+        + 'pense à le passer à "Faite" ou "Partielle" pour qu\'il '
+        + 'reflète la séance.</p>'
+      : '';
+
+    return ''
+      + '<section class="seances__bloc seances__bloc--comparaison">'
+      + '<h3>Prévu et réalisé</h3>'
+      + '<div class="seances__comparaison">' + lignes + '</div>'
+      + inviteStatut
+      + (statut === 'manquee'
+          ? '<p class="seances__aide-petit">'
+            + 'Statut manqué : la saisie est conservée mais ne pèse '
+            + 'pas dans la charge réalisée.</p>'
+          : '')
+      + '</section>';
+  }
+
+
+  // ---- Bandeau Proposition de report ----
+  //
+  // Apparaît uniquement quand toutes ces conditions sont réunies :
+  //   - le statut courant de la séance est 'manquee',
+  //   - la séance n'est pas la course du 30 août,
+  //   - l'utilisateur n'a pas refusé un report pour cette séance
+  //     (reportsIgnores[id] non actif),
+  //   - PLAN.proposerJourReport retourne un jour candidat (donc
+  //     un jour libre futur existe dans la semaine).
+  //
+  // La proposition lit l'état COURANT du plan à chaque rendu, donc
+  // tout déplacement ou permutation précédent est pris en compte.
+  function construireBlocPropositionReport(seance) {
+    const statut = STORAGE.obtenirStatutSeance(
+      etat.athleteActif, seance.id);
+    if (statut !== 'manquee') return '';
+    if (seance.typeSeance === 'course_jour') return '';
+
+    const prefs = STORAGE.obtenirPreferences() || {};
+    const ignores = prefs.reportsIgnores || {};
+    if (ignores[seance.id]) return '';
+
+    const propo = PLAN.proposerJourReport(etat.athleteActif, seance.id);
+    if (!propo) {
+      return ''
+        + '<section class="seances__bloc seances__bloc--report '
+        + 'seances__bloc--report-vide">'
+        + '<h3>Proposer un report</h3>'
+        + '<p class="seances__aide">'
+        + 'Aucun jour libre n\'est disponible cette semaine pour '
+        + 'reporter cette séance.</p>'
+        + '</section>';
+    }
+
+    return ''
+      + '<section class="seances__bloc seances__bloc--report">'
+      + '<h3>Proposer un report</h3>'
+      + '<p class="seances__aide">'
+      + 'Reporter cette séance à '
+      + '<strong>' + libelleJourCourt(propo.jour) + ' '
+      + formaterDateCourte(propo.date) + '</strong> ?</p>'
+      + '<div class="seances__report-actions">'
+      +   '<button type="button" '
+      +     'class="seances__report-bouton seances__report-bouton--valider" '
+      +     'data-action="reporter-valider" data-jour="' + propo.jour + '">'
+      +     'Reporter ce jour'
+      +   '</button>'
+      +   '<button type="button" '
+      +     'class="seances__report-bouton seances__report-bouton--ignorer" '
+      +     'data-action="reporter-ignorer">'
+      +     'Ignorer'
+      +   '</button>'
+      + '</div>'
+      + '</section>';
+  }
+
+
+  // ---- Bloc Adapter (déplacer, permuter, remplacer) ----
+  //
+  // Présenté en deux temps :
+  //   1. Barre des 7 jours de la semaine : le jour de la séance
+  //      est marqué actif. Cliquer un jour libre déplace la séance.
+  //      Cliquer un jour occupé permute avec la séance présente.
+  //      Le passage entre déplacement et permutation est donc
+  //      transparent pour l'utilisateur, sans bouton séparé.
+  //   2. Palette de remplacement de discipline : alternatives
+  //      compatibles (même zoneCible, même nature simple ou
+  //      combinée). La nature est préservée pour garder ferme
+  //      le décompte hebdomadaire à 4 séances.
+  //
+  // Aucun bloc affiché pour la course du 30 août : la course
+  // n'est ni déplacée ni remplacée.
+  function construireBlocAdapter(seance, semaine) {
+    if (seance.typeSeance === 'course_jour') return '';
+
+    return ''
+      + '<section class="seances__bloc seances__bloc--adapter">'
+      + '<h3>Adapter la séance</h3>'
+      + construireBarreJoursAdapter(seance, semaine)
+      + construireRemplacementDiscipline(seance)
+      + '</section>';
+  }
+
+  function construireBarreJoursAdapter(seance, semaine) {
+    // Tableau des séances de la semaine par jour, pour identifier
+    // celle qui occupe chaque créneau (pour la permutation).
+    const parJour = {};
+    for (let i = 0; i < semaine.seances.length; i++) {
+      parJour[semaine.seances[i].jour] = semaine.seances[i];
+    }
+
+    let html = ''
+      + '<div class="seances__adapter-sous-titre">Changer de jour</div>'
+      + '<p class="seances__aide-petit">'
+      + 'Cliquer un jour libre pour déplacer, ou un jour occupé '
+      + 'pour permuter. Toujours dans cette semaine.</p>'
+      + '<div class="seances__jours" role="group" '
+      + 'aria-label="Choix du jour">';
+
+    for (let j = 0; j < 7; j++) {
+      const occupant = parJour[j];
+      const estCourant = (occupant && occupant.id === seance.id);
+      const occupePar = (occupant && !estCourant) ? occupant : null;
+
+      let classes = 'seances__jour';
+      let dataAction;
+      let titre = '';
+
+      if (estCourant) {
+        classes += ' seances__jour--actuel';
+        dataAction = '';
+        titre = 'Jour actuel de la séance';
+      } else if (occupePar) {
+        // Cas semaine 15 : si l'occupant est la course du 30 août,
+        // la permutation est refusée par PLAN.permuterSeances. On
+        // reflète cette règle dans l'UI en désactivant le bouton.
+        if (occupePar.typeSeance === 'course_jour') {
+          classes += ' seances__jour--occupe seances__jour--bloque';
+          dataAction = '';
+          titre = 'Course du 30 août (non permutable)';
+        } else {
+          classes += ' seances__jour--occupe';
+          dataAction = 'permuter';
+          titre = 'Permuter avec ' + (occupePar.libelle || '');
+        }
+      } else {
+        classes += ' seances__jour--libre';
+        dataAction = 'deplacer';
+        titre = 'Déplacer ici';
+      }
+
+      const dataAttrs = dataAction
+        ? 'data-action="' + dataAction + '" '
+          + 'data-jour="' + j + '"'
+          + (occupePar
+              ? ' data-id-cible="' + echapperHTML(occupePar.id) + '"'
+              : '')
+        : '';
+
+      html += '<button type="button" class="' + classes + '" '
+        + dataAttrs
+        + ' title="' + echapperHTML(titre) + '"'
+        + (dataAction ? '' : ' disabled')
+        + '>'
+        + '<span class="seances__jour-libelle">'
+        + libelleJourCourt(j) + '</span>'
+        + (occupePar
+            ? '<span class="seances__jour-occupant">'
+              + echapperHTML(
+                  libelleDiscipline(occupePar.discipline)
+                  || '')
+              + '</span>'
+            : (estCourant
+                ? '<span class="seances__jour-occupant">ici</span>'
+                : '<span class="seances__jour-occupant">libre</span>'))
+        + '</button>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function construireRemplacementDiscipline(seance) {
+    const catalogue = PLAN.CATALOGUE || {};
+    const alternatives = (PLAN.cataloguesCompatibles
+      ? PLAN.cataloguesCompatibles(seance.typeSeance) : []);
+
+    if (alternatives.length <= 1) {
+      // Aucune alternative en dehors de la séance courante :
+      // on n'affiche pas le bloc plutôt que de présenter un seul
+      // bouton inactif.
+      return '';
+    }
+
+    let html = ''
+      + '<div class="seances__adapter-sous-titre">'
+      + 'Remplacer le contenu</div>'
+      + '<p class="seances__aide-petit">'
+      + 'Alternatives de même intensité et de même nature, pour '
+      + 'préserver l\'intention de la semaine.</p>'
       + '<div class="seances__alternatives">';
+
     for (let i = 0; i < alternatives.length; i++) {
       const cle = alternatives[i];
       const cat = catalogue[cle];
+      if (!cat) continue;
       const actif = (cle === seance.typeSeance);
       html += '<button type="button" '
         + 'class="seances__alternative'
         + (actif ? ' seances__alternative--actif' : '') + '" '
-        + 'data-action="modifier-type" data-type="' + cle + '">'
+        + 'data-action="remplacer-discipline" data-type="' + cle + '"'
+        + (actif ? ' disabled' : '')
+        + '>'
         + echapperHTML(cat.libelle) + '</button>';
     }
-    html += '</div></section>';
+    html += '</div>';
     return html;
   }
 
@@ -764,18 +1218,75 @@ const SEANCES = (function () {
       basculerStatut(el.getAttribute('data-valeur'));
       return;
     }
-    if (action === 'modifier-type') {
-      modifierType(el.getAttribute('data-type'));
+    if (action === 'remplacer-discipline') {
+      actionRemplacerDiscipline(el.getAttribute('data-type'));
+      return;
+    }
+    if (action === 'real-ressenti') {
+      saisirRessenti(el.getAttribute('data-valeur'));
+      return;
+    }
+    if (action === 'deplacer') {
+      actionDeplacer(parseInt(el.getAttribute('data-jour'), 10));
+      return;
+    }
+    if (action === 'permuter') {
+      actionPermuter(el.getAttribute('data-id-cible'));
+      return;
+    }
+    if (action === 'reporter-valider') {
+      actionReporterValider(parseInt(el.getAttribute('data-jour'), 10));
+      return;
+    }
+    if (action === 'reporter-ignorer') {
+      actionReporterIgnorer();
+      return;
+    }
+  }
+
+  // Sauvegarde d'un seul champ. Extrait pour pouvoir être appelé
+  // par deux voies : focusout (cas normal) et bascule de visibilité
+  // ou pagehide (filet de sauvegarde mobile, voir initialiser).
+  function sauvegarderChamp(element) {
+    if (!element || !element.getAttribute) return;
+    const action = element.getAttribute('data-action');
+    if (!etat.idSeanceDetail) return;
+
+    if (action === 'note') {
+      STORAGE.enregistrerNotesSeance(
+        etat.athleteActif, etat.idSeanceDetail, element.value);
+      return;
+    }
+    if (action === 'real-duree') {
+      saisirChampRealisation('duree_min', element.value);
+      return;
+    }
+    if (action === 'real-distance') {
+      saisirChampRealisation('distance_km', element.value);
+      return;
+    }
+    if (action === 'real-commentaire') {
+      saisirChampRealisation('commentaire', element.value);
       return;
     }
   }
 
   function gererBlur(e) {
-    if (!e.target.getAttribute) return;
-    const action = e.target.getAttribute('data-action');
-    if (action === 'note' && etat.idSeanceDetail) {
-      STORAGE.enregistrerNotesSeance(
-        etat.athleteActif, etat.idSeanceDetail, e.target.value);
+    sauvegarderChamp(e.target);
+  }
+
+  // Filet de sauvegarde mobile : parcourt tous les champs saisissables
+  // visibles dans le conteneur courant et déclenche leur sauvegarde.
+  // Appelé sur les événements de bascule d'onglet, de mise en veille
+  // ou de fermeture de page, où focusout peut ne jamais se déclencher
+  // proprement. Inoffensif quand on n'est pas sur la vue détail :
+  // querySelectorAll retourne alors un ensemble vide.
+  function forcerSauvegardeChampsActifs() {
+    if (!etat.conteneur) return;
+    const champs = etat.conteneur.querySelectorAll(
+      'input[data-action], textarea[data-action]');
+    for (let i = 0; i < champs.length; i++) {
+      sauvegarderChamp(champs[i]);
     }
   }
 
@@ -813,13 +1324,131 @@ const SEANCES = (function () {
     rendre();
   }
 
-  function modifierType(nouveauType) {
+  // -------------------- Saisie du réalisé --------------------
+
+  // Lit la réalisation courante, met à jour un seul champ, et
+  // réécrit l'objet via STORAGE.enregistrerRealisation. Le storage
+  // se charge de la normalisation (nombre positif ou null, ressenti
+  // valide ou null, chaîne sinon) et de la suppression automatique
+  // si tous les champs deviennent vides après la mise à jour.
+  function saisirChampRealisation(champ, valeur) {
     if (!etat.idSeanceDetail) return;
-    const trouvee = trouverSeance(etat.idSeanceDetail);
-    if (!trouvee) return;
-    PLAN.modifierQuatriemeSeance(
-      etat.athleteActif, trouvee.semaine.numero,
-      { type: nouveauType, personnalisable: true });
+    const courant = STORAGE.obtenirRealisation(
+      etat.athleteActif, etat.idSeanceDetail) || {};
+    const next = {
+      duree_min: courant.duree_min,
+      distance_km: courant.distance_km,
+      ressenti: courant.ressenti,
+      commentaire: courant.commentaire,
+    };
+    next[champ] = valeur;
+    STORAGE.enregistrerRealisation(
+      etat.athleteActif, etat.idSeanceDetail, next);
+    // Re rendu pour que la comparaison prévu / réalisé et le
+    // mini indicateur de la carte se mettent immédiatement à jour.
+    rendre();
+  }
+
+  function saisirRessenti(valeur) {
+    if (!etat.idSeanceDetail) return;
+    const courant = STORAGE.obtenirRealisation(
+      etat.athleteActif, etat.idSeanceDetail) || {};
+    // Cliquer le bouton actif désactive (toggle).
+    const nouveau = (courant.ressenti === valeur) ? null : valeur;
+    saisirChampRealisation('ressenti', nouveau);
+  }
+
+
+  // -------------------- Actions de flexibilité --------------------
+
+  // Déplace la séance courante vers un jour libre de sa semaine.
+  // En cas d'échec, on lit la raison structurée renvoyée par
+  // PLAN.deplacerSeance et on ne fait rien de visible : la barre
+  // de jours est elle même la principale rétroaction, l'utilisateur
+  // ne devrait pas tomber sur un cas d'échec ici puisque les jours
+  // occupés sont affichés comme tels et déclenchent l'action
+  // 'permuter', pas 'deplacer'.
+  function actionDeplacer(nouveauJour) {
+    if (!etat.idSeanceDetail) return;
+    const res = PLAN.deplacerSeance(
+      etat.athleteActif, etat.idSeanceDetail, nouveauJour);
+    if (!res || !res.ok) return;
+    rendre();
+  }
+
+  // Permute la séance courante avec une autre séance de la même
+  // semaine. L'identifiant cible vient du data attribute du bouton
+  // de jour occupé, ce qui garantit qu'il s'agit d'une séance de
+  // la même semaine que la courante (rendue par construireBarre
+  // JoursAdapter à partir de semaine.seances).
+  function actionPermuter(idCible) {
+    if (!etat.idSeanceDetail || !idCible) return;
+    const res = PLAN.permuterSeances(
+      etat.athleteActif, etat.idSeanceDetail, idCible);
+    if (!res) return;
+    rendre();
+  }
+
+  // Remplace le type / la discipline de la séance courante. Le
+  // catalogue d'alternatives a déjà été filtré côté affichage par
+  // PLAN.cataloguesCompatibles (même zoneCible, même nature). Le
+  // décompte hebdomadaire reste donc ferme.
+  function actionRemplacerDiscipline(nouveauType) {
+    if (!etat.idSeanceDetail || !nouveauType) return;
+    const res = PLAN.remplacerDiscipline(
+      etat.athleteActif, etat.idSeanceDetail, nouveauType);
+    if (!res) return;
+    rendre();
+  }
+
+
+  // -------------------- Proposition de report --------------------
+
+  // Valide la proposition : déplace la séance manquée vers le jour
+  // libre proposé. Si le déplacement aboutit, on bascule le statut
+  // sur 'a_venir' pour que la séance reportée puisse être suivie à
+  // nouveau dans son nouveau créneau. On nettoie aussi le drapeau
+  // d'ignorance éventuel, par symétrie.
+  function actionReporterValider(nouveauJour) {
+    if (!etat.idSeanceDetail) return;
+    const res = PLAN.deplacerSeance(
+      etat.athleteActif, etat.idSeanceDetail, nouveauJour);
+    if (!res || !res.ok) {
+      // Le jour libre proposé est devenu occupé entre l'affichage
+      // et le clic. On re rend pour que la prochaine proposition
+      // tienne compte du nouvel état (ou bascule sur "aucun jour
+      // libre" si la semaine est saturée).
+      rendre();
+      return;
+    }
+    // Bascule du statut sur 'a_venir' : la séance reportée
+    // redevient une séance à faire sur son nouveau créneau.
+    STORAGE.enregistrerStatutSeance(
+      etat.athleteActif, etat.idSeanceDetail, 'a_venir');
+    // Nettoie un éventuel marqueur d'ignorance pour cette séance,
+    // pour qu'une éventuelle future passage à manquée propose à
+    // nouveau un report propre.
+    const prefs = STORAGE.obtenirPreferences() || {};
+    if (prefs.reportsIgnores && prefs.reportsIgnores[etat.idSeanceDetail]) {
+      delete prefs.reportsIgnores[etat.idSeanceDetail];
+      STORAGE.enregistrerPreferences(prefs);
+    }
+    rendre();
+  }
+
+  // Refuse la proposition : on mémorise que l'utilisateur ne
+  // souhaite pas reporter cette séance, pour ne pas réafficher le
+  // bandeau à chaque ouverture de la vue détail. Si la séance
+  // bascule plus tard hors de 'manquee' puis y revient (rare), le
+  // bandeau ne réapparaîtra pas tant que reportsIgnores reste actif.
+  // Une validation ultérieure (actionReporterValider) nettoie ce
+  // drapeau, et une réinitialisation des données aussi.
+  function actionReporterIgnorer() {
+    if (!etat.idSeanceDetail) return;
+    const prefs = STORAGE.obtenirPreferences() || {};
+    if (!prefs.reportsIgnores) prefs.reportsIgnores = {};
+    prefs.reportsIgnores[etat.idSeanceDetail] = true;
+    STORAGE.enregistrerPreferences(prefs);
     rendre();
   }
 
@@ -836,6 +1465,26 @@ const SEANCES = (function () {
     etat.athleteActif = (prefs && prefs.athleteActif) || 'julien';
     etat.semaineCourante = semaineParDefaut();
     etat.idSeanceDetail = null;
+
+    // Filet de sauvegarde mobile attaché UNE SEULE FOIS, au premier
+    // initialiser. Les listeners ne sont pas réattachés aux bascules
+    // d'onglet : ils restent valides et utilisent etat.conteneur,
+    // mis à jour à chaque initialiser. Quand l'utilisateur est sur
+    // un autre onglet, forcerSauvegardeChampsActifs ne trouve aucun
+    // champ saisissable et reste inoffensive. Cible les cas mobile :
+    //   - visibilitychange (hidden) : bascule d'onglet, mise en veille
+    //   - pagehide                 : fermeture, navigation arrière
+    if (!etat.filetsAttaches) {
+      etat.filetsAttaches = true;
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden') {
+          forcerSauvegardeChampsActifs();
+        }
+      });
+      window.addEventListener('pagehide', function () {
+        forcerSauvegardeChampsActifs();
+      });
+    }
 
     // Assure qu'un plan est disponible pour les deux athlètes.
     if (!PLAN.obtenirPlan('julien') || !PLAN.obtenirPlan('giulia')) {

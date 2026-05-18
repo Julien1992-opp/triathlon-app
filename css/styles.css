@@ -1339,6 +1339,423 @@ input[type="checkbox"] {
 
 
 /* ============================================================
+   ÉVOLUTION : SUIVI ENRICHI ET FLEXIBILITÉ
+   ============================================================
+   Bandeau volumes hebdo, mini indicateur réalisé sur les cartes,
+   bloc Réalisé (saisie après séance), bloc Comparaison prévu et
+   réalisé, bandeau de proposition de report, bloc Adapter (jours
+   pour déplacer ou permuter, alternatives de discipline).
+   Mobile first, cibles tactiles 44 à 56 pixels minimum.
+*/
+
+/* ---- Bandeau hebdo : ligne volumes prévu / réalisé ---- */
+.seances__bandeau-volumes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--esp-s);
+  margin-top: var(--esp-xs);
+}
+
+.seances__bandeau-volume {
+  font-size: var(--taille-xs);
+  color: var(--texte-doux);
+  font-variant-numeric: tabular-nums;
+  background: var(--fond-overlay);
+  border: 1px solid var(--bordure);
+  border-radius: var(--rayon-pill);
+  padding: 3px var(--esp-s);
+}
+
+.seances__bandeau-volume strong {
+  color: var(--texte-secondaire);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+
+/* ---- Mini indicateur prévu / réalisé sur les cartes liste ---- */
+.seances__carte-realise {
+  margin-top: var(--esp-s);
+  font-size: var(--taille-xs);
+  color: var(--texte-secondaire);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.seances__carte-realise--surplus {
+  color: var(--succes);
+}
+
+.seances__carte-realise--deficit {
+  color: var(--avertissement);
+}
+
+
+/* ---- Bloc Réalisé après la séance ---- */
+.seances__bloc--realise {
+  border-left: 3px solid var(--accent);
+}
+
+.seances__realise-ligne {
+  display: flex;
+  gap: var(--esp-m);
+  margin: var(--esp-m) 0;
+}
+
+.seances__realise-champ {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  position: relative;
+}
+
+.seances__realise-champ > span {
+  font-size: var(--taille-xs);
+  color: var(--texte-secondaire);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 700;
+}
+
+.seances__realise-champ input {
+  width: 100%;
+  min-height: 48px;
+  background: var(--fond-input);
+  color: var(--texte-principal);
+  border: 1px solid var(--bordure-claire);
+  border-radius: var(--rayon-m);
+  padding: 12px 44px 12px var(--esp-m);
+  font-size: var(--taille-l);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--police-data);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.seances__realise-champ input:focus {
+  outline: none;
+  border-color: var(--bordure-focus);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
+}
+
+.seances__realise-champ small {
+  position: absolute;
+  right: var(--esp-m);
+  bottom: 14px;
+  font-size: var(--taille-xs);
+  color: var(--texte-tertiaire);
+  pointer-events: none;
+  font-family: var(--police-data);
+}
+
+.seances__realise-ressenti {
+  display: flex;
+  gap: var(--esp-s);
+  margin: var(--esp-m) 0;
+}
+
+.seances__ressenti {
+  flex: 1;
+  min-height: 48px;
+  background: var(--fond-overlay);
+  border: 1px solid var(--bordure-claire);
+  color: var(--texte-doux);
+  border-radius: var(--rayon-m);
+  padding: var(--esp-s) var(--esp-s);
+  font-size: var(--taille-s);
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all var(--t-rapide);
+  font-family: inherit;
+}
+
+.seances__ressenti--facile { color: var(--succes); }
+.seances__ressenti--moyen  { color: var(--avertissement); }
+.seances__ressenti--dur    { color: var(--erreur); }
+
+.seances__ressenti--actif.seances__ressenti--facile {
+  background: var(--succes);
+  border-color: var(--succes);
+  color: #051F12;
+}
+
+.seances__ressenti--actif.seances__ressenti--moyen {
+  background: var(--avertissement);
+  border-color: var(--avertissement);
+  color: #1F1500;
+}
+
+.seances__ressenti--actif.seances__ressenti--dur {
+  background: var(--erreur);
+  border-color: var(--erreur);
+  color: #1F0707;
+}
+
+.seances__ressenti:hover:not(.seances__ressenti--actif) {
+  border-color: currentColor;
+  background: var(--fond-surface-elev);
+}
+
+.seances__realise-commentaire {
+  width: 100%;
+  min-height: 64px;
+  background: var(--fond-input);
+  color: var(--texte-principal);
+  border: 1px solid var(--bordure-claire);
+  border-radius: var(--rayon-m);
+  padding: var(--esp-m);
+  font-size: var(--taille-m);
+  font-family: inherit;
+  resize: vertical;
+}
+
+.seances__realise-commentaire:focus {
+  outline: none;
+  border-color: var(--bordure-focus);
+  box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18);
+}
+
+
+/* ---- Bloc Comparaison prévu / réalisé ---- */
+.seances__bloc--comparaison {
+  border-left: 3px solid var(--succes);
+}
+
+.seances__comparaison {
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-xs);
+  margin-top: var(--esp-s);
+}
+
+.seances__comparaison-ligne {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  align-items: center;
+  gap: var(--esp-s);
+  padding: var(--esp-s) var(--esp-m);
+  background: var(--fond-overlay);
+  border: 1px solid var(--bordure);
+  border-radius: var(--rayon-m);
+  font-variant-numeric: tabular-nums;
+}
+
+.seances__comparaison-libelle {
+  font-size: var(--taille-xs);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--texte-secondaire);
+  font-weight: 700;
+}
+
+.seances__comparaison-prevu {
+  color: var(--texte-doux);
+  font-size: var(--taille-s);
+}
+
+.seances__comparaison-vers {
+  color: var(--texte-tertiaire);
+  font-size: var(--taille-s);
+}
+
+.seances__comparaison-realise {
+  color: var(--accent);
+  font-size: var(--taille-m);
+  font-weight: 800;
+}
+
+.seances__comparaison-delta {
+  font-size: var(--taille-xs);
+  font-weight: 700;
+  padding: 2px var(--esp-s);
+  border-radius: var(--rayon-pill);
+  white-space: nowrap;
+}
+
+.seances__comparaison-delta--surplus {
+  background: rgba(52, 211, 153, 0.15);
+  color: var(--succes);
+}
+
+.seances__comparaison-delta--deficit {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--avertissement);
+}
+
+.seances__comparaison-delta--egal {
+  background: var(--fond-surface-elev);
+  color: var(--texte-secondaire);
+}
+
+
+/* ---- Bandeau Proposition de report ---- */
+.seances__bloc--report {
+  border-left: 3px solid var(--avertissement);
+  background: linear-gradient(180deg,
+    rgba(251, 191, 36, 0.07),
+    var(--fond-surface));
+}
+
+.seances__bloc--report-vide {
+  border-left-color: var(--bordure-claire);
+  background: var(--fond-surface);
+  opacity: 0.85;
+}
+
+.seances__bloc--report strong {
+  color: var(--avertissement);
+}
+
+.seances__report-actions {
+  display: flex;
+  gap: var(--esp-s);
+  margin-top: var(--esp-m);
+  flex-wrap: wrap;
+}
+
+.seances__report-bouton {
+  flex: 1;
+  min-width: 140px;
+  min-height: 48px;
+  padding: var(--esp-m);
+  border-radius: var(--rayon-m);
+  font-size: var(--taille-m);
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--bordure-claire);
+  background: var(--fond-overlay);
+  color: var(--texte-doux);
+  transition: all var(--t-rapide);
+}
+
+.seances__report-bouton--valider {
+  background: var(--accent);
+  color: #051625;
+  border-color: var(--accent);
+}
+
+.seances__report-bouton--valider:hover {
+  background: var(--accent-fort);
+  border-color: var(--accent-fort);
+}
+
+.seances__report-bouton--ignorer:hover {
+  border-color: var(--texte-doux);
+  color: var(--texte-principal);
+}
+
+
+/* ---- Bloc Adapter (jours + alternatives) ---- */
+.seances__bloc--adapter {
+  border-left: 3px solid var(--discipline-combinee);
+}
+
+.seances__adapter-sous-titre {
+  font-size: var(--taille-s);
+  color: var(--texte-principal);
+  font-weight: 700;
+  margin: var(--esp-m) 0 var(--esp-xs);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.seances__adapter-sous-titre:first-of-type {
+  margin-top: 0;
+}
+
+.seances__jours {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin: var(--esp-s) 0 var(--esp-m);
+}
+
+.seances__jour {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 56px;
+  padding: var(--esp-xs) 2px;
+  background: var(--fond-overlay);
+  border: 1px solid var(--bordure-claire);
+  border-radius: var(--rayon-m);
+  color: var(--texte-doux);
+  font-family: inherit;
+  cursor: pointer;
+  transition: all var(--t-rapide);
+  overflow: hidden;
+}
+
+.seances__jour:disabled {
+  cursor: not-allowed;
+}
+
+.seances__jour-libelle {
+  font-size: var(--taille-xs);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.seances__jour-occupant {
+  font-size: 10px;
+  color: var(--texte-tertiaire);
+  text-transform: lowercase;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.seances__jour--actuel {
+  background: var(--accent);
+  color: #051625;
+  border-color: var(--accent);
+}
+
+.seances__jour--actuel .seances__jour-occupant {
+  color: rgba(5, 22, 37, 0.7);
+}
+
+.seances__jour--libre {
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.seances__jour--libre .seances__jour-occupant {
+  color: var(--succes);
+}
+
+.seances__jour--libre:hover {
+  background: rgba(52, 211, 153, 0.15);
+  border-color: var(--succes);
+}
+
+.seances__jour--occupe:hover {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: var(--avertissement);
+}
+
+.seances__jour--bloque {
+  opacity: 0.5;
+}
+
+.seances__jour--bloque:hover {
+  background: var(--fond-overlay);
+  border-color: var(--bordure-claire);
+}
+
+
+/* ============================================================
    MODULE PROGRESSION
    ============================================================ */
 

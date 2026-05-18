@@ -970,6 +970,341 @@ const PLAN = (function () {
 
 
   // ============================================================
+  // FLEXIBILITÉ HEBDOMADAIRE (mutations bornées à la semaine)
+  // ============================================================
+  //
+  // Trois opérations ouvrent la souplesse demandée sur le plan, en
+  // respectant un garde fou strict : aucune mutation ne peut faire
+  // sortir une séance de sa semaine d'origine. Le volume cible
+  // hebdomadaire reste donc la référence : déplacement et permutation
+  // ne touchent ni à la durée ni à la discipline, et le remplacement
+  // de discipline recalcule la durée via la même règle de phase que
+  // la génération initiale.
+  //
+  // Toutes ces fonctions retournent le plan persisté à jour, ou null
+  // si l'opération n'a pas pu aboutir (séance introuvable, jour
+  // occupé, type invalide, séances dans des semaines différentes).
+  // L'UI peut s'appuyer sur le retour null pour ne rien afficher
+  // ou émettre une alerte utilisateur ; aucun effet partiel.
+
+  // Helper privé : localise une séance par identifiant dans le plan
+  // d'un athlète. Retourne { plan, semaine, index } ou null.
+  function localiserSeance(cleAthlete, idSeance) {
+    const plan = STORAGE.obtenirPlan(cleAthlete);
+    if (!plan || !plan.semaines) return null;
+    for (let i = 0; i < plan.semaines.length; i++) {
+      const sem = plan.semaines[i];
+      const idx = sem.seances.findIndex(function (s) {
+        return s.id === idSeance;
+      });
+      if (idx !== -1) {
+        return { plan: plan, semaine: sem, index: idx };
+      }
+    }
+    return null;
+  }
+
+  // Déplace une séance vers un autre jour de SA propre semaine.
+  // - Refuse tout déplacement hors de la semaine (garde fou borné).
+  // - Refuse si nouveauJour n'est pas un entier 0..6.
+  // - Refuse si nouveauJour est déjà occupé par une autre séance de
+  //   la même semaine.
+  // - No-op succès si nouveauJour est égal au jour actuel.
+  // - Aucune autre propriété de la séance n'est modifiée.
+  //
+  // Retour structuré pour permettre à l'UI de réagir précisément
+  // sans échec silencieux. Formes possibles :
+  //   - succès :   { ok: true, plan, noop? }
+  //                noop = true si nouveauJour était déjà le jour actuel.
+  //   - échec  :   { ok: false, raison, idSeanceEnConflit? }
+  // Raisons possibles :
+  //   - 'jour_invalide'      : nouveauJour hors 0..6 ou non entier.
+  //   - 'seance_introuvable' : idSeance inconnu dans le plan.
+  //   - 'course_jour'        : refus de déplacer la course du 30 août.
+  //   - 'jour_occupe'        : le jour cible porte déjà une autre
+  //                            séance ; idSeanceEnConflit donne
+  //                            l'identifiant de la séance occupant
+  //                            ce jour, ce qui permet à l'UI de
+  //                            proposer une permutation enchaînée
+  //                            via permuterSeances.
+  function deplacerSeance(cleAthlete, idSeance, nouveauJour) {
+    if (typeof nouveauJour !== 'number'
+        || nouveauJour < 0 || nouveauJour > 6
+        || nouveauJour !== Math.floor(nouveauJour)) {
+      return { ok: false, raison: 'jour_invalide' };
+    }
+    const loc = localiserSeance(cleAthlete, idSeance);
+    if (!loc) return { ok: false, raison: 'seance_introuvable' };
+    const sem = loc.semaine;
+    const idx = loc.index;
+    const seance = sem.seances[idx];
+
+    if (seance.jour === nouveauJour) {
+      return { ok: true, plan: loc.plan, noop: true };
+    }
+
+    // Cas course_jour : la course du 30 août est figée au dimanche
+    // de la semaine 15, on refuse le déplacement par sécurité.
+    if (seance.typeSeance === 'course_jour') {
+      return { ok: false, raison: 'course_jour' };
+    }
+
+    // Refus si le jour cible est occupé par une AUTRE séance de la
+    // semaine. On renvoie l'identifiant de cette séance pour que
+    // seances.js puisse proposer une permutation explicite ciblée.
+    for (let j = 0; j < sem.seances.length; j++) {
+      if (j === idx) continue;
+      if (sem.seances[j].jour === nouveauJour) {
+        return {
+          ok: false,
+          raison: 'jour_occupe',
+          idSeanceEnConflit: sem.seances[j].id,
+        };
+      }
+    }
+
+    seance.jour = nouveauJour;
+    seance.date = dateDuJour(sem.numero, nouveauJour);
+
+    STORAGE.enregistrerPlan(cleAthlete, loc.plan);
+    return { ok: true, plan: loc.plan };
+  }
+
+  // Permute deux séances de la MÊME semaine, en n'intervertissant
+  // QUE leur couple (jour, date). Toutes les autres propriétés
+  // (id, discipline, type, libellé, durée, zone, allure, objectif,
+  // détails, renforcement, estCommune, estPersonnalisable,
+  // compteCommeNSeances) restent attachées à chaque séance.
+  // L'identité de la séance suit la séance, pas le créneau, ce qui
+  // garantit que statuts, notes et réalisations (indexés par id)
+  // continuent de pointer sur la bonne séance après permutation.
+  function permuterSeances(cleAthlete, idA, idB) {
+    if (!idA || !idB || idA === idB) return null;
+
+    const locA = localiserSeance(cleAthlete, idA);
+    if (!locA) return null;
+    const locB = locA.semaine.seances.findIndex(function (s) {
+      return s.id === idB;
+    });
+    // Garde fou borné à la semaine : idB doit appartenir à la même
+    // semaine que idA. Sinon on refuse, même si idB existe ailleurs.
+    if (locB === -1) return null;
+
+    const sA = locA.semaine.seances[locA.index];
+    const sB = locA.semaine.seances[locB];
+
+    // Refus si l'une des deux est la course du 30 août.
+    if (sA.typeSeance === 'course_jour'
+        || sB.typeSeance === 'course_jour') {
+      return null;
+    }
+
+    const jourTmp = sA.jour;
+    const dateTmp = sA.date;
+    sA.jour = sB.jour;
+    sA.date = sB.date;
+    sB.jour = jourTmp;
+    sB.date = dateTmp;
+
+    STORAGE.enregistrerPlan(cleAthlete, locA.plan);
+    return locA.plan;
+  }
+
+  // Remplace la discipline (et le type) d'une séance par un autre
+  // type du catalogue. Garde fous :
+  //   - nouveauType doit exister dans CATALOGUE,
+  //   - nouveauType ne peut pas être 'course_jour',
+  //   - la séance ciblée ne peut pas être 'course_jour'.
+  // La séance est régénérée via genererSeance, ce qui recalcule la
+  // durée selon la même règle de phase que la génération initiale
+  // (volume cible de la semaine préservé), et reconstruit l'allure
+  // depuis les chronos courants du profil.
+  //
+  // Conservés : id, jour, date, estPersonnalisable.
+  // Invalidés : estCommune et estCommuneCandidate (changer de
+  // discipline rompt la coïncidence avec l'autre athlète ; on ne
+  // resynchronise pas automatiquement).
+  //
+  // Le filtrage des alternatives par cataloguesCompatibles garde la
+  // règle : une séance simple ne peut être remplacée que par une
+  // autre séance simple, une combinée par une autre combinée. Le
+  // décompte hebdomadaire reste donc ferme à 4 séances calendrier
+  // par semaine, totalSeancesEffectives n'est pas modifié par un
+  // remplacement passant par l'UI.
+  //
+  // totalSeancesEffectives est toutefois recalculé ici par défense
+  // en profondeur : si un appel direct à cette fonction utilisait
+  // un type qui change la nature (par exemple un script externe),
+  // le décompte resterait cohérent en sortie.
+  function remplacerDiscipline(cleAthlete, idSeance, nouveauType) {
+    if (!CATALOGUE[nouveauType]) return null;
+    if (nouveauType === 'course_jour') return null;
+
+    const loc = localiserSeance(cleAthlete, idSeance);
+    if (!loc) return null;
+    const ancienne = loc.semaine.seances[loc.index];
+    if (ancienne.typeSeance === 'course_jour') return null;
+
+    const profil = STORAGE.obtenirAthlete(cleAthlete);
+    const zones = ALLURES.calculerToutesZones(profil.chronos);
+
+    const nouvelle = genererSeance({ type: nouveauType }, {
+      athleteCle: cleAthlete,
+      semaineNum: loc.semaine.numero,
+      phaseCle: loc.semaine.phase,
+      allegee: loc.semaine.estAllegee,
+      zones: zones,
+      jour: ancienne.jour,
+      date: ancienne.date,
+      indexDansSemaine: loc.index,
+    });
+    if (!nouvelle) return null;
+
+    // Conservation de l'identité et du drapeau personnalisable.
+    nouvelle.id = ancienne.id;
+    nouvelle.estPersonnalisable = ancienne.estPersonnalisable;
+    // Une séance dont la discipline change ne peut plus rester
+    // marquée commune avec l'autre athlète : la coïncidence de
+    // discipline est rompue. On invalide les deux drapeaux ;
+    // l'autre athlète garde la sienne intacte de son côté.
+    nouvelle.estCommune = false;
+    nouvelle.estCommuneCandidate = false;
+
+    loc.semaine.seances[loc.index] = nouvelle;
+
+    // Recompte des séances effectives : la nouvelle séance peut
+    // changer le décompte hebdomadaire (combinée compte pour 2).
+    let totalEff = 0;
+    for (let i = 0; i < loc.semaine.seances.length; i++) {
+      totalEff += loc.semaine.seances[i].compteCommeNSeances;
+    }
+    loc.semaine.totalSeancesEffectives = totalEff;
+
+    STORAGE.enregistrerPlan(cleAthlete, loc.plan);
+    return loc.plan;
+  }
+
+
+  // ============================================================
+  // AIDES À LA FLEXIBILITÉ (lecture seule)
+  // ============================================================
+
+  // Liste des jours (0=lundi à 6=dimanche) qui ne portent aucune
+  // séance dans la semaine donnée, en excluant éventuellement la
+  // séance qu'on s'apprête à déplacer (pour ne pas la considérer
+  // comme occupant son propre jour pendant le calcul).
+  function obtenirJoursLibresSemaine(cleAthlete, semaineNum, idSeanceExclue) {
+    const plan = STORAGE.obtenirPlan(cleAthlete);
+    if (!plan || !plan.semaines) return [];
+    const sem = plan.semaines.find(function (s) {
+      return s.numero === semaineNum;
+    });
+    if (!sem) return [];
+    const occupes = {};
+    for (let i = 0; i < sem.seances.length; i++) {
+      if (sem.seances[i].id === idSeanceExclue) continue;
+      occupes[sem.seances[i].jour] = true;
+    }
+    const libres = [];
+    for (let j = 0; j < 7; j++) {
+      if (!occupes[j]) libres.push(j);
+    }
+    return libres;
+  }
+
+  // Propose un créneau de report pour une séance, sur un jour libre
+  // de SA propre semaine, à partir d'aujourd'hui inclus.
+  //
+  // Cette fonction lit l'état courant du plan via STORAGE.obtenirPlan
+  // à chaque appel : tout déplacement ou permutation déjà effectué
+  // est donc pris en compte, jamais d'état figé en mémoire.
+  //
+  // Règles :
+  //   - On ne propose jamais un jour antérieur à aujourd'hui.
+  //   - On ne propose jamais un jour déjà occupé par une autre
+  //     séance de la semaine (la séance ciblée elle même est
+  //     exclue du calcul).
+  //   - On retourne le premier jour candidat dans l'ordre lundi
+  //     vers dimanche.
+  //   - On retourne null si aucun jour ne convient (rare en milieu
+  //     de semaine, fréquent en fin de semaine), ce qui permet à
+  //     l'UI d'afficher un message explicite plutôt que de proposer
+  //     un report impossible.
+  //   - On retourne null pour la course du 30 août : aucun report
+  //     possible pour la course elle même.
+  function proposerJourReport(cleAthlete, idSeance) {
+    const loc = localiserSeance(cleAthlete, idSeance);
+    if (!loc) return null;
+    const seance = loc.semaine.seances[loc.index];
+    if (seance.typeSeance === 'course_jour') return null;
+
+    // Liste des jours occupés par les AUTRES séances de la semaine.
+    const occupes = {};
+    for (let i = 0; i < loc.semaine.seances.length; i++) {
+      if (i === loc.index) continue;
+      occupes[loc.semaine.seances[i].jour] = true;
+    }
+
+    // Date d'aujourd'hui au format ISO local 'YYYY-MM-DD'. On
+    // travaille en chaînes ISO pour comparer directement aux
+    // dates produites par dateDuJour, qui utilise le même format.
+    const auj = new Date();
+    const aujISO = auj.getFullYear()
+      + '-' + String(auj.getMonth() + 1).padStart(2, '0')
+      + '-' + String(auj.getDate()).padStart(2, '0');
+
+    for (let j = 0; j < 7; j++) {
+      if (occupes[j]) continue;
+      const date = dateDuJour(loc.semaine.numero, j);
+      if (date < aujISO) continue;
+      return { jour: j, date: date };
+    }
+    return null;
+  }
+
+  // Liste des clés du catalogue compatibles avec un type source,
+  // pour proposer un remplacement de discipline cohérent avec
+  // l'intention pédagogique de la semaine. Deux critères cumulés :
+  //
+  //   1. Même zoneCible (facile, endurance, seuil, vo2), pour ne
+  //      jamais transformer une séance qualité en récupération ou
+  //      l'inverse.
+  //   2. Même NATURE de séance : une séance pure (natation, vélo
+  //      ou course) ne peut être remplacée que par une autre séance
+  //      pure ; une combinée ne peut être remplacée que par une
+  //      autre combinée. Cette règle garde fermes les 4 séances
+  //      calendrier par semaine : une simple compte pour 1, une
+  //      combinée pour 2, donc interdire le passage simple <->
+  //      combinée préserve le décompte hebdomadaire.
+  //
+  // Exemples :
+  //   - crs_endurance peut devenir velo_endurance ou nat_endurance
+  //     (même zoneCible 'endurance', même nature simple) ;
+  //   - comb_endurance peut devenir une autre combinée endurance,
+  //     mais PAS un crs_endurance (changerait le décompte) ;
+  //   - nat_seuil peut devenir crs_seuil ou velo_seuil, mais pas
+  //     comb_allure (même zoneCible 'seuil' mais nature combinée).
+  //
+  // Toujours exclu : 'course_jour'. La liste inclut le type source
+  // lui même (utile pour l'affichage : on peut marquer la position
+  // courante dans la palette de choix).
+  function cataloguesCompatibles(typeSourceCle) {
+    const source = CATALOGUE[typeSourceCle];
+    if (!source) return [];
+    if (typeSourceCle === 'course_jour') return [];
+    const zoneSource = source.zoneCible;
+    const estCombineeSource = source.discipline === 'combinee';
+    return Object.keys(CATALOGUE).filter(function (cle) {
+      if (cle === 'course_jour') return false;
+      const cat = CATALOGUE[cle];
+      if (cat.zoneCible !== zoneSource) return false;
+      const estCombinee = cat.discipline === 'combinee';
+      return estCombinee === estCombineeSource;
+    });
+  }
+
+
+  // ============================================================
   // API PUBLIQUE
   // ============================================================
 
@@ -1078,6 +1413,16 @@ const PLAN = (function () {
     // Mutations contrôlées.
     modifierQuatriemeSeance: modifierQuatriemeSeance,
     invaliderPlan: invaliderPlan,
+
+    // Flexibilité hebdomadaire (mutations bornées à la semaine).
+    deplacerSeance: deplacerSeance,
+    permuterSeances: permuterSeances,
+    remplacerDiscipline: remplacerDiscipline,
+
+    // Aides à la flexibilité (lecture seule, lisent l'état courant).
+    obtenirJoursLibresSemaine: obtenirJoursLibresSemaine,
+    proposerJourReport: proposerJourReport,
+    cataloguesCompatibles: cataloguesCompatibles,
 
     // Utilitaires exposés (pour seances.js et progression.js).
     trouverPhase: trouverPhase,

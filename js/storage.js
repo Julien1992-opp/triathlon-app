@@ -14,11 +14,16 @@
 
 const STORAGE = (function () {
 
-  // Clés de stockage. La version active est CLE_V2. CLE_V1 n'est lue
-  // qu'une seule fois, pour migrer une installation antérieure vers
-  // le format v2 qui ajoute le champ photoAvatar par athlète.
+  // Clés de stockage. La version active est CLE_V3. CLE_V1 et CLE_V2
+  // ne sont lues qu'une seule fois, pour migrer une installation
+  // antérieure :
+  //   v1 → v2 ajoute photoAvatar par athlète,
+  //   v2 → v3 ajoute realisations par athlète et reportsIgnores dans
+  //           preferences, pour le suivi enrichi du réalisé et la
+  //           proposition de report de séance manquée.
   const CLE_V1 = 'triathlon_lausanne_2026_v1';
   const CLE_V2 = 'triathlon_lausanne_2026_v2';
+  const CLE_V3 = 'triathlon_lausanne_2026_v3';
 
   // Mémoire de secours si localStorage n'est pas accessible
   // (mode privé du navigateur, restrictions d'environnement).
@@ -61,7 +66,7 @@ const STORAGE = (function () {
   // Aucun chrono saisi, aucun plan généré, aucune case nutrition cochée.
   function structureInitiale() {
     return {
-      version: 2,
+      version: 3,
       creeLe: nouvelHorodatage(),
       miseAJour: nouvelHorodatage(),
 
@@ -80,6 +85,10 @@ const STORAGE = (function () {
       preferences: {
         athleteActif: 'julien',
         avatarsSimples: { julien: false, giulia: false },
+        // Identifiants de séances dont l'utilisateur a refusé la
+        // proposition automatique de report. Évite de réafficher
+        // perpétuellement le bandeau. Format : { idSeance: true }.
+        reportsIgnores: {},
       },
     };
   }
@@ -133,6 +142,22 @@ const STORAGE = (function () {
       plan: null,
       statuts: {},
       notesSeance: {}, // { 'idSeance': 'texte libre' }
+
+      // Saisie après séance, indexée par identifiant de séance.
+      // Une entrée n'existe que si l'utilisateur a saisi au moins
+      // un champ. Format d'une entrée :
+      //   {
+      //     duree_min: nombre > 0 ou null,
+      //     distance_km: nombre > 0 ou null,
+      //     ressenti: 'facile' | 'moyen' | 'dur' ou null,
+      //     commentaire: chaîne (peut être vide),
+      //     dateSaisie: ISO 8601
+      //   }
+      // Indépendant de statuts : si le statut est manquée, la
+      // contribution de cette entrée à la charge est nulle au
+      // calcul, mais l'entrée reste conservée pour préserver la
+      // saisie en cas de retour sur le statut.
+      realisations: {},
     };
   }
 
@@ -170,6 +195,53 @@ const STORAGE = (function () {
     return migre;
   }
 
+  // Migration douce v2 vers v3. Idempotente : appelée sur des données
+  // déjà en v3, ne change rien. N'ajoute que les champs manquants :
+  //   - realisations: {} par athlète,
+  //   - preferences.reportsIgnores: {}.
+  // Ne touche à aucun champ existant (chronos, plan, statuts, notes,
+  // FC, trame, photoAvatar, nutrition, autres préférences).
+  //
+  // Toujours précédée d'un passage par migrerVersV2 pour garantir que
+  // les champs v2 (photoAvatar) sont en place lorsqu'on lit un état v1
+  // direct. La chaîne complète v1 → v2 → v3 est appliquée en lecture
+  // et à l'import JSON.
+  function migrerVersV3(donnees) {
+    if (!donnees || typeof donnees !== 'object') return donnees;
+    const versionActuelle = typeof donnees.version === 'number'
+      ? donnees.version : 1;
+    if (versionActuelle >= 3) return donnees;
+
+    // S'assurer d'abord d'être au moins en v2.
+    const enV2 = migrerVersV2(donnees);
+
+    const migre = clonageProfond(enV2);
+    migre.version = 3;
+
+    // Ajoute realisations par athlète si absent.
+    if (migre.athletes && typeof migre.athletes === 'object') {
+      const cles = ['julien', 'giulia'];
+      for (let i = 0; i < cles.length; i++) {
+        const a = migre.athletes[cles[i]];
+        if (a && typeof a === 'object'
+            && !Object.prototype.hasOwnProperty.call(a, 'realisations')) {
+          a.realisations = {};
+        }
+      }
+    }
+
+    // Ajoute preferences.reportsIgnores si absent.
+    if (!migre.preferences || typeof migre.preferences !== 'object') {
+      migre.preferences = {};
+    }
+    if (!Object.prototype.hasOwnProperty.call(
+          migre.preferences, 'reportsIgnores')) {
+      migre.preferences.reportsIgnores = {};
+    }
+
+    return migre;
+  }
+
 
   // -------------------- Lecture et écriture brutes --------------------
 
@@ -180,27 +252,62 @@ const STORAGE = (function () {
         : structureInitiale();
     }
     try {
-      // 1. Source de vérité : CLE_V2.
+      // 1. Source de vérité : CLE_V3.
+      const brutV3 = window.localStorage.getItem(CLE_V3);
+      if (brutV3) {
+        const donneesV3 = JSON.parse(brutV3);
+        if (!estStructureValide(donneesV3)) {
+          console.warn(
+            'Données stockées invalides en v3. Réinitialisation.'
+          );
+          return structureInitiale();
+        }
+        // Cas atypiques : coexistence avec v1 ou v2. CLE_V3 prime.
+        if (window.localStorage.getItem(CLE_V2)) {
+          console.warn(
+            'Coexistence des clés v2 et v3 détectée. La v3 prime, '
+            + 'la v2 est ignorée et conservée telle quelle.'
+          );
+        }
+        if (window.localStorage.getItem(CLE_V1)) {
+          console.warn(
+            'Coexistence des clés v1 et v3 détectée. La v3 prime, '
+            + 'la v1 est ignorée et conservée telle quelle.'
+          );
+        }
+        return donneesV3;
+      }
+
+      // 2. Pas de v3 : tenter une migration depuis CLE_V2.
       const brutV2 = window.localStorage.getItem(CLE_V2);
       if (brutV2) {
         const donneesV2 = JSON.parse(brutV2);
         if (!estStructureValide(donneesV2)) {
           console.warn(
-            'Données stockées invalides en v2. Réinitialisation.'
+            'Données v2 invalides. Réinitialisation de la structure.'
           );
           return structureInitiale();
         }
-        // Cas atypique : CLE_V1 coexiste. CLE_V2 prime, on signale.
-        if (window.localStorage.getItem(CLE_V1)) {
-          console.warn(
-            'Coexistence des clés v1 et v2 détectée. La v2 prime, '
-            + 'la v1 est ignorée et conservée telle quelle.'
+        let donneesMigrees;
+        try {
+          donneesMigrees = migrerVersV3(donneesV2);
+          sauvegarder(donneesMigrees);
+          window.localStorage.removeItem(CLE_V2);
+          console.info(
+            'Migration v2 vers v3 effectuée. Champs realisations et '
+            + 'reportsIgnores ajoutés. Données existantes préservées.'
           );
+          return donneesMigrees;
+        } catch (eMigration) {
+          console.warn(
+            'Migration v2 vers v3 impossible : ' + eMigration.message
+            + '. Données v2 conservées intactes pour réessai.'
+          );
+          return donneesMigrees || migrerVersV3(donneesV2);
         }
-        return donneesV2;
       }
 
-      // 2. Pas de v2 : tenter une migration depuis CLE_V1.
+      // 3. Pas de v2 non plus : tenter une migration depuis CLE_V1.
       const brutV1 = window.localStorage.getItem(CLE_V1);
       if (brutV1) {
         const donneesV1 = JSON.parse(brutV1);
@@ -211,39 +318,34 @@ const STORAGE = (function () {
           return structureInitiale();
         }
         // Ordre strict :
-        //   a. migrerVersV2 produit un nouvel objet en v2 ;
-        //   b. sauvegarder() écrit cet objet sous CLE_V2 ;
-        //   c. SEULEMENT si l'écriture v2 a réussi, on supprime
+        //   a. migrerVersV3 produit un nouvel objet en v3, en
+        //      passant par v2 de manière idempotente ;
+        //   b. sauvegarder() écrit cet objet sous CLE_V3 ;
+        //   c. SEULEMENT si l'écriture v3 a réussi, on supprime
         //      CLE_V1. En cas d'échec de l'écriture (quota par
         //      exemple), une exception remonte, le removeItem n'est
         //      pas atteint, et CLE_V1 reste intacte pour réessai.
-        // donneesMigrees est déclarée hors du try pour rester visible
-        // dans le catch et éviter de recalculer la migration.
         let donneesMigrees;
         try {
-          donneesMigrees = migrerVersV2(donneesV1);
+          donneesMigrees = migrerVersV3(donneesV1);
           sauvegarder(donneesMigrees);
           window.localStorage.removeItem(CLE_V1);
           console.info(
-            'Migration v1 vers v2 effectuée. Champ photoAvatar '
-            + 'ajouté aux profils existants.'
+            'Migration v1 vers v3 effectuée. Champs photoAvatar, '
+            + 'realisations et reportsIgnores ajoutés. Données '
+            + 'existantes préservées.'
           );
           return donneesMigrees;
         } catch (eMigration) {
           console.warn(
-            'Migration v1 vers v2 impossible : ' + eMigration.message
+            'Migration v1 vers v3 impossible : ' + eMigration.message
             + '. Données v1 conservées intactes pour réessai.'
           );
-          // On retourne la copie migrée en mémoire pour que la
-          // session courante fonctionne, sans toucher au stockage.
-          // Si migrerVersV2 a réussi avant l'échec de sauvegarder,
-          // donneesMigrees est déjà disponible. Sinon, on tente une
-          // dernière fois (rare : migrerVersV2 est très peu faillible).
-          return donneesMigrees || migrerVersV2(donneesV1);
+          return donneesMigrees || migrerVersV3(donneesV1);
         }
       }
 
-      // 3. Première utilisation : aucune clé connue.
+      // 4. Première utilisation : aucune clé connue.
       return structureInitiale();
     } catch (e) {
       basculerEnSecours('lecture impossible (' + e.message + ')');
@@ -265,7 +367,7 @@ const STORAGE = (function () {
     }
     try {
       const texte = JSON.stringify(donnees);
-      window.localStorage.setItem(CLE_V2, texte);
+      window.localStorage.setItem(CLE_V3, texte);
     } catch (e) {
       // Quota dépassé ou autre erreur d'écriture.
       basculerEnSecours('écriture impossible (' + e.message + ')');
@@ -357,6 +459,83 @@ const STORAGE = (function () {
     sauvegarder(etat);
   }
 
+  // Lit l'entrée de réalisation associée à une séance.
+  // Retourne null si rien n'a été saisi. Sinon retourne un clone de
+  // l'entrée, avec la même forme que celle décrite dans
+  // structureAthleteVide :
+  //   { duree_min, distance_km, ressenti, commentaire, dateSaisie }
+  function obtenirRealisation(cle, idSeance) {
+    const cleNorm = normaliserCleAthlete(cle);
+    const etat = charger();
+    const r = (etat.athletes[cleNorm].realisations || {})[idSeance];
+    return r ? clonageProfond(r) : null;
+  }
+
+  // Écrit ou met à jour la saisie de réalisation pour une séance.
+  // L'entrée n'est conservée que si au moins un champ saisissable
+  // porte une valeur utile : duree_min positif, distance_km positif,
+  // ressenti défini, ou commentaire non vide après trim. Sinon
+  // l'entrée est supprimée par symétrie avec notesSeance et statuts.
+  //
+  // Le champ dateSaisie est toujours réécrit à l'enregistrement, à
+  // l'heure courante. Les valeurs entrantes sont normalisées :
+  //   - duree_min, distance_km : nombre fini strictement positif,
+  //     null sinon ;
+  //   - ressenti : exactement 'facile', 'moyen' ou 'dur', null sinon ;
+  //   - commentaire : chaîne, vide tolérée.
+  function enregistrerRealisation(cle, idSeance, entree) {
+    const cleNorm = normaliserCleAthlete(cle);
+    const etat = charger();
+    if (!etat.athletes[cleNorm].realisations) {
+      etat.athletes[cleNorm].realisations = {};
+    }
+
+    const e = entree && typeof entree === 'object' ? entree : {};
+
+    function normNombre(v) {
+      const n = (typeof v === 'string') ? parseFloat(v) : v;
+      return (typeof n === 'number' && isFinite(n) && n > 0) ? n : null;
+    }
+    function normRessenti(v) {
+      return (v === 'facile' || v === 'moyen' || v === 'dur') ? v : null;
+    }
+    function normCommentaire(v) {
+      return (typeof v === 'string') ? v : '';
+    }
+
+    const propre = {
+      duree_min: normNombre(e.duree_min),
+      distance_km: normNombre(e.distance_km),
+      ressenti: normRessenti(e.ressenti),
+      commentaire: normCommentaire(e.commentaire),
+      dateSaisie: nouvelHorodatage(),
+    };
+
+    const rienDeSaisi = propre.duree_min === null
+      && propre.distance_km === null
+      && propre.ressenti === null
+      && (!propre.commentaire || !propre.commentaire.trim());
+
+    if (rienDeSaisi) {
+      delete etat.athletes[cleNorm].realisations[idSeance];
+    } else {
+      etat.athletes[cleNorm].realisations[idSeance] = propre;
+    }
+    sauvegarder(etat);
+  }
+
+  // Supprime l'entrée de réalisation d'une séance, si elle existe.
+  // No-op si rien n'est enregistré pour cette séance.
+  function effacerRealisation(cle, idSeance) {
+    const cleNorm = normaliserCleAthlete(cle);
+    const etat = charger();
+    if (etat.athletes[cleNorm].realisations
+        && etat.athletes[cleNorm].realisations[idSeance]) {
+      delete etat.athletes[cleNorm].realisations[idSeance];
+      sauvegarder(etat);
+    }
+  }
+
   function obtenirNutrition() {
     const etat = charger();
     return clonageProfond(etat.nutrition);
@@ -439,11 +618,12 @@ const STORAGE = (function () {
             return;
           }
           // Migration douce pour les fichiers exportés avant l'ajout
-          // du champ photoAvatar. L'import reste un REMPLACEMENT
+          // des champs photoAvatar (v2) puis realisations et
+          // reportsIgnores (v3). L'import reste un REMPLACEMENT
           // COMPLET de l'état de l'application, jamais une fusion :
           // toutes les données préalablement en place sont écrasées
           // par le contenu du fichier importé.
-          const donneesMigrees = migrerVersV2(donnees);
+          const donneesMigrees = migrerVersV3(donnees);
           sauvegarder(donneesMigrees);
           resoudre(donneesMigrees);
         } catch (e) {
@@ -485,8 +665,9 @@ const STORAGE = (function () {
       return;
     }
     try {
+      window.localStorage.removeItem(CLE_V3);
+      // On nettoie aussi les éventuelles anciennes clés, par hygiène.
       window.localStorage.removeItem(CLE_V2);
-      // On nettoie aussi une éventuelle ancienne clé v1, par hygiène.
       window.localStorage.removeItem(CLE_V1);
     } catch (e) {
       basculerEnSecours('suppression impossible (' + e.message + ')');
@@ -564,6 +745,11 @@ const STORAGE = (function () {
     enregistrerStatutSeance: enregistrerStatutSeance,
     obtenirNotesSeance: obtenirNotesSeance,
     enregistrerNotesSeance: enregistrerNotesSeance,
+
+    // réalisations (saisie après séance)
+    obtenirRealisation: obtenirRealisation,
+    enregistrerRealisation: enregistrerRealisation,
+    effacerRealisation: effacerRealisation,
 
     // nutrition
     obtenirNutrition: obtenirNutrition,
