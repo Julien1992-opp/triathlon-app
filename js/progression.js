@@ -17,6 +17,19 @@
  *   - Répartition par discipline en minutes prévues.
  *   - Avancement semaine par semaine, taux de complétion.
  *
+ * Calcul de la charge RÉALISÉE par séance, ordre strict de priorité :
+ *   1. Statut 'manquee' force la contribution à 0, quelle que soit
+ *      la saisie. La saisie est conservée (préservation utilisateur)
+ *      mais ne pèse pas dans la charge.
+ *   2. Sinon, si une durée réelle (realisation.duree_min) est saisie
+ *      et strictement positive, on l'utilise directement.
+ *   3. Sinon, si une distance réelle (realisation.distance_km) est
+ *      saisie et que l'allure cible de la séance est calculable
+ *      depuis les chronos courants du profil, on convertit la
+ *      distance en minutes via cette allure (natation, vélo, course).
+ *   4. Sinon, repli sur la pondération par statut sur la durée
+ *      prévue : faite = 1, partielle = 0.5, autres = 0.
+ *
  * Garde fous :
  *   - Aucune projection de performance, aucun temps de course estimé.
  *   - Si aucune séance n'a encore été réalisée, état vide explicite.
@@ -94,13 +107,103 @@ const PROGRESSION = (function () {
 
   // -------------------- Calculs --------------------
 
+  // Convertit une distance réelle (en km) en minutes via l'allure
+  // cible de la séance, en s'appuyant sur les zones d'entraînement
+  // produites par ALLURES pour le profil. Retourne null si la
+  // conversion n'est pas possible :
+  //   - discipline 'combinee' : la distance saisie est ambiguë
+  //     (vélo + course), on n'invente pas une décomposition ;
+  //   - discipline 'course_jour' : pas d'allure cible ;
+  //   - zone non calculable (chrono manquant pour la discipline) ;
+  //   - séance sans zoneCible.
+  //
+  // Unités produites par ALLURES.exprimerAllure :
+  //   - natation : valeur = secondes par 100 m,
+  //     minutes = (distance_km * 10 * valeur) / 60
+  //   - velo    : valeur = km par heure,
+  //     minutes = (distance_km / valeur) * 60
+  //   - course  : valeur = secondes par km,
+  //     minutes = (distance_km * valeur) / 60
+  function convertirDistanceEnMin(distance_km, seance, zones) {
+    if (!zones || !seance) return null;
+    if (typeof distance_km !== 'number' || !(distance_km > 0)) return null;
+    const discipline = seance.discipline;
+    if (discipline === 'combinee' || discipline === 'course_jour') return null;
+    const r = zones[discipline];
+    if (!r || !r.estEstimation || !r.zonesEntrainement) return null;
+    const zoneCible = seance.zoneCible;
+    if (!zoneCible) return null;
+    const z = r.zonesEntrainement.find(function (z) {
+      return z.cle === zoneCible;
+    });
+    if (!z || typeof z.valeur !== 'number' || !(z.valeur > 0)) return null;
+
+    if (discipline === 'natation') {
+      return (distance_km * 10 * z.valeur) / 60;
+    }
+    if (discipline === 'velo') {
+      return (distance_km / z.valeur) * 60;
+    }
+    if (discipline === 'course') {
+      return (distance_km * z.valeur) / 60;
+    }
+    return null;
+  }
+
+  // Contribution d'une séance à la charge réalisée, en minutes,
+  // selon l'ordre de priorité strict documenté en tête de module :
+  //   manquee -> 0,
+  //   sinon durée réelle saisie,
+  //   sinon distance réelle convertie via allure cible,
+  //   sinon durée prévue pondérée par le statut (faite/partielle).
+  function contributionRealiseeMin(seance, statut, realisation, zones) {
+    // 1. Manquée force 0, quoi qu'il arrive côté saisie. L'entrée
+    //    realisations est conservée en stockage mais ne pèse pas
+    //    dans la charge, par cohérence avec le statut affiché.
+    if (statut === 'manquee') return 0;
+
+    const dureePrevue = seance.duree_min || 0;
+
+    // 2. Durée réelle saisie : prioritaire.
+    if (realisation
+        && typeof realisation.duree_min === 'number'
+        && realisation.duree_min > 0) {
+      return realisation.duree_min;
+    }
+
+    // 3. Distance réelle saisie, convertie via allure cible.
+    if (realisation
+        && typeof realisation.distance_km === 'number'
+        && realisation.distance_km > 0) {
+      const min = convertirDistanceEnMin(
+        realisation.distance_km, seance, zones);
+      if (min !== null && min > 0) return min;
+    }
+
+    // 4. Repli : durée prévue pondérée par le statut.
+    if (statut === 'faite') return dureePrevue;
+    if (statut === 'partielle') return dureePrevue * 0.5;
+    // statut 'a_venir' : aucune contribution.
+    return 0;
+  }
+
+
   // Calcule les statistiques du plan d'un athlète à partir du plan
-  // persisté et des statuts enregistrés. Une séance partielle compte
-  // pour moitié dans le volume réalisé. Une combinée garde sa durée
-  // brute, le décompte d'effectives revient au plan.
+  // persisté, des statuts et des saisies de réalisation. Le taux
+  // de complétion des SÉANCES reste basé sur les statuts (faite,
+  // partielle, manquée), tandis que le volume RÉALISÉ en minutes
+  // suit la règle de priorité documentée plus haut. Une combinée
+  // garde sa durée brute, le décompte d'effectives revient au plan.
   function calculerStats(cleAthlete) {
     const plan = obtenirPlan(cleAthlete);
     if (!plan || !plan.semaines) return null;
+
+    // Zones d'entraînement courantes, dérivées des chronos saisis,
+    // utilisées par contributionRealiseeMin pour convertir une
+    // distance réelle en minutes via l'allure cible. Calculées une
+    // seule fois par appel.
+    const profil = STORAGE.obtenirAthlete(cleAthlete);
+    const zones = ALLURES.calculerToutesZones(profil.chronos);
 
     const compteStatuts = {
       a_venir: 0, faite: 0, partielle: 0, manquee: 0,
@@ -109,6 +212,10 @@ const PROGRESSION = (function () {
     let totalEffectives = 0;
     let totalPrevuMin = 0;
     let totalRealiseMin = 0;
+    // Nombre de séances pour lesquelles l'utilisateur a saisi au
+    // moins un champ de réalisation (durée, distance, ressenti ou
+    // commentaire). Indicateur informatif distinct des statuts.
+    let nbSeancesAvecSaisie = 0;
 
     const repartitionDiscipline = {
       natation: 0, velo: 0, course: 0, combinee: 0,
@@ -130,6 +237,7 @@ const PROGRESSION = (function () {
         const s = sem.seances[j];
         const duree = s.duree_min || 0;
         const statut = STORAGE.obtenirStatutSeance(cleAthlete, s.id);
+        const realisation = STORAGE.obtenirRealisation(cleAthlete, s.id);
 
         // Comptage global
         compteStatuts[statut] = (compteStatuts[statut] || 0) + 1;
@@ -138,14 +246,23 @@ const PROGRESSION = (function () {
         totalPrevuMin += duree;
         semPrevuMin += duree;
         nbPrevues++;
+        if (realisation) nbSeancesAvecSaisie++;
 
-        // Volume réalisé : partielle compte moitié.
+        // Taux de complétion des SÉANCES : basé sur le statut, comme
+        // avant. Sert au pourcentage hebdomadaire de complétion qui
+        // s'exprime en nombre de séances réalisées, pas en minutes.
         let part = 0;
         if (statut === 'faite') part = 1;
         else if (statut === 'partielle') part = 0.5;
-        totalRealiseMin += duree * part;
-        semRealiseMin += duree * part;
         nbFaitesEquiv += part;
+
+        // Volume RÉALISÉ en minutes : règle de priorité durée
+        // réelle, distance convertie, repli statut. Détaillé dans
+        // contributionRealiseeMin et son commentaire d'en tête.
+        const contribution = contributionRealiseeMin(
+          s, statut, realisation, zones);
+        totalRealiseMin += contribution;
+        semRealiseMin += contribution;
 
         // Répartition disciplines, course_jour rangé sous course.
         const cleDisc = s.discipline === 'course_jour'
@@ -177,6 +294,7 @@ const PROGRESSION = (function () {
       totalEffectives: totalEffectives,
       totalPrevuMin: Math.round(totalPrevuMin),
       totalRealiseMin: Math.round(totalRealiseMin),
+      nbSeancesAvecSaisie: nbSeancesAvecSaisie,
       compteStatuts: compteStatuts,
       repartitionDiscipline: repartitionDiscipline,
       minutesDiscipline: minutesDiscipline,
@@ -258,6 +376,12 @@ const PROGRESSION = (function () {
       stats.totalSeances);
     html += '</section>';
 
+    // Largeur de la barre principale clampée à 100 %, mais le
+    // pourcentage textuel reste fidèle au calcul réel (peut
+    // dépasser 100 % si l'utilisateur a saisi plus de minutes
+    // réalisées que prévu). Indicateur informatif sans effet visuel
+    // de débordement.
+    const largeurBarre = Math.min(100, tauxRealMin);
     html += '<section class="progression__volume">'
       + '<div class="progression__volume-titre">Volume d\'entraînement</div>'
       + '<div class="progression__volume-corps">'
@@ -279,7 +403,7 @@ const PROGRESSION = (function () {
       + '</div>'
       + '<div class="progression__barre">'
       +   '<div class="progression__barre-rempli" style="width:'
-      +     tauxRealMin + '%"></div>'
+      +     largeurBarre + '%"></div>'
       + '</div>'
       + '</section>';
 
@@ -406,9 +530,14 @@ const PROGRESSION = (function () {
 
   function construireBarreSemaine(s, pic) {
     const hauteurPrevu = Math.max(8, Math.round((s.prevu / pic) * 100));
-    const hauteurRealise = s.prevu > 0
-      ? Math.round(hauteurPrevu * (s.realise / s.prevu))
+    // Hauteur de la part réalisée plafonnée à la hauteur prévue,
+    // pour éviter qu'une saisie supérieure au prévu fasse déborder
+    // visuellement la barre. La valeur réelle est conservée dans
+    // le title pour rester lisible et exacte.
+    const ratioReal = s.prevu > 0
+      ? Math.min(1, s.realise / s.prevu)
       : 0;
+    const hauteurRealise = Math.round(hauteurPrevu * ratioReal);
 
     return ''
       + '<div class="progression__barre-semaine progression__barre-semaine--'
@@ -501,6 +630,11 @@ const PROGRESSION = (function () {
     initialiser: initialiser,
     basculerAthlete: basculerAthlete,
     calculerStats: calculerStats,
+    // Helpers exposés pour permettre à seances.js d'afficher la
+    // comparaison prévu vs réalisé séance par séance sans
+    // dupliquer la logique de priorité de charge.
+    contributionRealiseeMin: contributionRealiseeMin,
+    convertirDistanceEnMin: convertirDistanceEnMin,
     obtenirAthleteActif: function () { return etat.athleteActif; },
   };
 
