@@ -438,15 +438,51 @@ const SEANCES = (function () {
   }
 
 
+  // Comparateur de séances pour le tri d'affichage par date.
+  //
+  // Pourquoi un tri à l'affichage : deplacerSeance et permuterSeances
+  // mutent seance.jour et seance.date mais ne réordonnent pas le
+  // tableau sem.seances (par cohérence avec les ids et le JSON
+  // exporté, qui suivent l'ordre d'origine). On trie donc une copie
+  // locale au moment du rendu, sans toucher au stockage.
+  //
+  // Trois niveaux de comparaison successifs :
+  //   1. date (chaîne ISO YYYY-MM-DD), comparaison lexicographique
+  //      exacte. Les séances sans date valide sont reléguées en
+  //      queue de liste via la sentinelle '￿', qui se classe
+  //      après n'importe quelle date ISO valide.
+  //   2. jour (0..6), filet pour le cas improbable où deux séances
+  //      partagent la même date après mutation. Garde le critère
+  //      stable et lisible.
+  //   3. id (chaîne), stabilité absolue si tout le reste est égal.
+  function comparerSeancesParDate(a, b) {
+    const da = (typeof a.date === 'string' && a.date.length === 10)
+      ? a.date : '￿';
+    const db = (typeof b.date === 'string' && b.date.length === 10)
+      ? b.date : '￿';
+    if (da !== db) return da < db ? -1 : 1;
+    if (typeof a.jour === 'number' && typeof b.jour === 'number'
+        && a.jour !== b.jour) {
+      return a.jour - b.jour;
+    }
+    if (a.id !== b.id) return a.id < b.id ? -1 : 1;
+    return 0;
+  }
+
   function construireListeCartes() {
     const sem = obtenirSemaine(etat.semaineCourante);
     if (!sem) return '';
     // Zones d'allure calculées une seule fois pour toute la semaine,
     // depuis les chronos courants du profil.
     const zones = obtenirZones();
+    // Copie locale triée par date croissante pour que l'ordre
+    // affiché reflète l'ordre chronologique réel des séances, y
+    // compris après déplacement ou permutation. Le tableau persisté
+    // n'est jamais modifié par cette opération.
+    const seancesTriees = sem.seances.slice().sort(comparerSeancesParDate);
     let html = '<ul class="seances__liste">';
-    for (let i = 0; i < sem.seances.length; i++) {
-      html += construireCarteSeance(sem.seances[i], zones);
+    for (let i = 0; i < seancesTriees.length; i++) {
+      html += construireCarteSeance(seancesTriees[i], zones);
     }
     html += '</ul>';
     return html;
